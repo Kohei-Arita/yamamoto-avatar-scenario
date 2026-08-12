@@ -5,6 +5,7 @@ import {
   ensureMicrophoneAccess,
   fetchLiveAvatarConfig,
   respondWithRagStream,
+  subscribeDialogueEvents,
   startLiveAvatarSession,
   stopLiveAvatarSession
 } from "./liveavatar-browser-api.js";
@@ -47,6 +48,7 @@ export function createSessionManager({
   let currentSessionId = null;
   let config = null;
   let selfControlledConversation = null;
+  let dialogueEventSource = null;
   let startPromise = null;
 
   const sessionStartLock = createSessionStartLock();
@@ -123,6 +125,8 @@ export function createSessionManager({
   }
 
   async function resetState() {
+    dialogueEventSource?.close();
+    dialogueEventSource = null;
     selfControlledConversation?.reset();
     selfControlledConversation = null;
     currentSessionId = null;
@@ -200,6 +204,12 @@ export function createSessionManager({
 
         sessionLockHeartbeat.start();
         await bindRagSession(currentSessionId);
+        dialogueEventSource = subscribeDialogueEvents(currentSessionId, {
+          onSpeechSegment: (segment) => {
+            onLog(`operator.speech_segment: ${segment.speechText}`);
+            selfControlledConversation?.speakText(segment).catch(onError);
+          }
+        });
         await startOpeningGreeting({
           liveAvatarConfig: config,
           selfControlledConversation,

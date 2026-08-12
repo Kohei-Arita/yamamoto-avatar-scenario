@@ -106,7 +106,7 @@ export async function fetchLiveAvatarConfig() {
 }
 
 export async function respondWithRagStream(sessionId, text, { signal, onEvent = () => {} } = {}) {
-  const response = await fetch("/api/rag/respond/stream", {
+  const response = await fetch("/api/dialogue/respond/stream", {
     method: "POST",
     signal,
     headers: {
@@ -117,11 +117,11 @@ export async function respondWithRagStream(sessionId, text, { signal, onEvent = 
 
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
-    ensureOk(response, data, "rag stream failed");
+    ensureOk(response, data, "dialogue stream failed");
   }
 
   if (!response.body) {
-    throw new Error("rag stream body missing");
+    throw new Error("dialogue stream body missing");
   }
 
   const reader = response.body.getReader();
@@ -163,7 +163,7 @@ export async function respondWithRagStream(sessionId, text, { signal, onEvent = 
       }
 
       if (parsedEvent.event === "error") {
-        streamError = new Error(data.error || "rag stream failed");
+        streamError = new Error(data.error || "dialogue stream failed");
       }
     }
 
@@ -177,7 +177,7 @@ export async function respondWithRagStream(sessionId, text, { signal, onEvent = 
   }
 
   if (!finalResult) {
-    throw new Error("rag stream ended without a final result");
+    throw new Error("dialogue stream ended without a final result");
   }
 
   return finalResult;
@@ -188,7 +188,32 @@ export async function bindRagSession(sessionId) {
     return null;
   }
 
-  return postJson("/api/rag/session", { sessionId }, "rag session bind failed");
+  return postJson("/api/dialogue/session", { sessionId }, "dialogue session bind failed");
+}
+
+// オペレーター操作(分岐選択・強制送り・再発話)で確定した医師セリフを
+// サーバーからpush受信するためのSSEチャンネル。
+export function subscribeDialogueEvents(sessionId, { onSpeechSegment = () => {} } = {}) {
+  const source = new EventSource(
+    `/api/dialogue/events?sessionId=${encodeURIComponent(sessionId || "")}`
+  );
+
+  source.addEventListener("speech_segment", (event) => {
+    try {
+      const data = JSON.parse(event.data);
+
+      if (data?.speechText || data?.text) {
+        onSpeechSegment({
+          speechText: data.speechText || data.text || "",
+          subtitleText: data.subtitleText || data.speechText || data.text || ""
+        });
+      }
+    } catch {
+      // Ignore malformed events.
+    }
+  });
+
+  return source;
 }
 
 export async function createLiveAvatarSessionToken() {

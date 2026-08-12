@@ -14,6 +14,7 @@ const connectionStateEl = document.getElementById("connectionState");
 const micStateEl = document.getElementById("micState");
 
 const params = new URLSearchParams(window.location.search);
+const operatorToken = params.get("optoken") || "";
 const shouldAutostart = params.get("autostart") === "1";
 const hideControls = params.get("controls") === "0";
 const showSubtitles = params.get("subtitles") !== "0";
@@ -134,6 +135,69 @@ chromaKeyToggle?.addEventListener("change", () => {
 
 document.addEventListener("mousemove", showHudTemporarily);
 
+// オペレーター用ショートカット(?optoken=<OPERATOR_TOKEN> 付きで開いた場合のみ有効)。
+// 1/2/3=Voting分岐A/B/C、n=次へ(強制)、r=再発話。既存の f / s とは衝突しない。
+async function callOperatorApi(path, body = {}) {
+  if (!operatorToken) {
+    return;
+  }
+
+  try {
+    const response = await fetch(path, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${operatorToken}`
+      },
+      body: JSON.stringify({ ...body, sessionId: manager.getSessionId() })
+    });
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok || data?.ok === false) {
+      console.warn("operator api failed", path, data);
+    }
+  } catch (error) {
+    console.error("operator api error", path, error);
+  }
+}
+
+const OPERATOR_BRANCH_KEYS = { 1: "A", 2: "B", 3: "C" };
+
+function resolveOperatorBranch(slot) {
+  const state = window.__operatorState;
+  const branches = state?.awaitingBranches || [];
+  const suffix = OPERATOR_BRANCH_KEYS[slot];
+  return (
+    branches.find((entry) => entry.branch.endsWith(`_${suffix}`))?.branch ||
+    branches[slot - 1]?.branch ||
+    null
+  );
+}
+
+async function refreshOperatorState() {
+  if (!operatorToken) {
+    return;
+  }
+
+  try {
+    const response = await fetch(
+      `/api/operator/state?sessionId=${encodeURIComponent(manager.getSessionId() || "")}`,
+      { headers: { authorization: `Bearer ${operatorToken}` } }
+    );
+    const data = await response.json().catch(() => ({}));
+
+    if (data?.ok) {
+      window.__operatorState = data.state;
+    }
+  } catch (error) {
+    console.error("operator state error", error);
+  }
+}
+
+if (operatorToken) {
+  setInterval(refreshOperatorState, 2000);
+}
+
 document.addEventListener("keydown", (event) => {
   const key = event.key.toLowerCase();
 
@@ -147,6 +211,26 @@ document.addEventListener("keydown", (event) => {
     } else {
       startBtn.click();
     }
+  }
+
+  if (!operatorToken) {
+    return;
+  }
+
+  if (key === "1" || key === "2" || key === "3") {
+    const branch = resolveOperatorBranch(Number(key));
+
+    if (branch) {
+      callOperatorApi("/api/operator/branch", { branch });
+    }
+  }
+
+  if (key === "n") {
+    callOperatorApi("/api/operator/next");
+  }
+
+  if (key === "r") {
+    callOperatorApi("/api/operator/say");
   }
 });
 

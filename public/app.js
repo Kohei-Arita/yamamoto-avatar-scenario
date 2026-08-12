@@ -123,7 +123,7 @@ async function refreshRagLogs() {
     return;
   }
 
-  const response = await fetch(`/api/rag/logs?sessionId=${encodeURIComponent(sessionId)}`);
+  const response = await fetch(`/api/dialogue/logs?sessionId=${encodeURIComponent(sessionId)}`);
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok || data.ok === false) {
@@ -218,5 +218,7 @@ manager
   })
   .catch((error) => {
     log("Config load failed:", error.message);
-    setConfigWarning("設定の読み込みに失敗しました。サーバー起動状態と `.env` を確認してください。");
+    setConfigWarning(
+      "設定の読み込みに失敗しました。サーバー起動状態と `.env` を確認してください。"
+    );
   });

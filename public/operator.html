@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>オペレーター画面 - AIアバター山本医師</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/operator.css" />
+  </head>
+  <body class="operator-body">
+    <main class="operator-main">
+      <h1>進行オペレーター画面</h1>
+      <p class="operator-note">
+        ※進行状態はサーバーメモリのみで保持されます。サーバー再起動で先頭に戻るため、その場合は「ジャンプ」で復帰してください。本番は単一インスタンスで運用します。
+      </p>
+
+      <section class="operator-panel" id="authPanel">
+        <label for="tokenInput">OPERATOR_TOKEN</label>
+        <input type="password" id="tokenInput" placeholder="Bearerトークンを入力" />
+        <button id="connectBtn">接続</button>
+        <span id="authState" class="operator-muted">未接続</span>
+      </section>
+
+      <section class="operator-grid">
+        <div class="operator-panel">
+          <h2>現在の進行</h2>
+          <dl class="operator-state">
+            <dt>セッション</dt>
+            <dd id="stateSession">-</dd>
+            <dt>シーン</dt>
+            <dd id="stateScene">-</dd>
+            <dt>現在ノード</dt>
+            <dd id="stateNode">-</dd>
+            <dt>直近の患者発話</dt>
+            <dd id="statePatient">-</dd>
+            <dt>intent判定</dt>
+            <dd id="stateIntent">-</dd>
+          </dl>
+          <h3>現在ノードのセリフ</h3>
+          <div id="stateLines" class="operator-lines">-</div>
+        </div>
+
+        <div class="operator-panel">
+          <h2>Voting分岐</h2>
+          <div id="branchButtons" class="operator-branches">
+            <p class="operator-muted">分岐待機中のノードではありません</p>
+          </div>
+          <h2>操作</h2>
+          <div class="operator-actions">
+            <button id="nextBtn">次へ（強制）</button>
+            <button id="sayBtn">再発話</button>
+            <button id="resetBtn" class="danger">リセット</button>
+          </div>
+          <div class="operator-jump">
+            <select id="jumpSelect"></select>
+            <button id="jumpBtn">ジャンプ</button>
+          </div>
+          <p id="actionResult" class="operator-muted"></p>
+        </div>
+      </section>
+
+      <section class="operator-panel">
+        <h2>進行ログ</h2>
+        <div id="logList" class="operator-logs"></div>
+      </section>
+    </main>
+    <script type="module" src="/operator.js"></script>
+  </body>
+</html>
