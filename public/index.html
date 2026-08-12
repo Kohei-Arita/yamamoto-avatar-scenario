@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Professor LiveAvatar Sandbox Demo</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="page-shell">
+      <section class="hero-panel">
+        <div>
+          <p class="eyebrow">Professor Avatar Demo</p>
+          <h1>Sandbox で動かす医療 AI アバター</h1>
+          <p class="hero-copy">
+            HeyGen LiveAvatar を使った肺がんガイドライン RAG 付き会話デモです。標準構成は
+            self-controlled で、応答本文はこのサーバー側で生成します。
+          </p>
+        </div>
+        <dl class="meta-grid">
+          <div>
+            <dt>Mode</dt>
+            <dd id="modeValue">-</dd>
+          </div>
+          <div>
+            <dt>Sandbox</dt>
+            <dd id="sandboxValue">-</dd>
+          </div>
+          <div>
+            <dt>Avatar</dt>
+            <dd id="avatarValue">-</dd>
+          </div>
+          <div>
+            <dt>Language</dt>
+            <dd id="languageValue">-</dd>
+          </div>
+        </dl>
+      </section>
+
+      <section class="demo-layout">
+        <article class="stage-card">
+          <div class="stage-header">
+            <div>
+              <p class="section-label">Session</p>
+              <h2>Live Video</h2>
+            </div>
+            <div class="status-pills">
+              <span class="status-pill"
+                ><span>Connection</span><strong id="connectionState">idle</strong></span
+              >
+              <span class="status-pill"><span>Mic</span><strong id="micState">off</strong></span>
+            </div>
+          </div>
+
+          <div class="video-frame">
+            <video id="remoteVideo" autoplay playsinline></video>
+            <canvas id="remoteCanvas" class="hidden" aria-hidden="true"></canvas>
+            <audio id="remoteAudio" autoplay></audio>
+            <div id="videoPlaceholder" class="placeholder">映像待機中...</div>
+            <div id="subtitleBox" class="subtitle-box hidden" aria-live="polite"></div>
+          </div>
+
+          <div class="actions-row">
+            <button id="startBtn" class="primary-btn">Start Session</button>
+            <button id="stopBtn" class="secondary-btn" disabled>Stop Session</button>
+            <label class="toggle-chip" for="chromaKeyToggle">
+              <input id="chromaKeyToggle" type="checkbox" checked />
+              <span>Chroma Key</span>
+            </label>
+          </div>
+
+          <p class="helper-text">
+            Sandbox ではアバターやセッション時間に制限があります。ブラウザでマイク許可が必要です。
+          </p>
+        </article>
+
+        <aside class="side-column">
+          <section class="info-card">
+            <p class="section-label">Checklist</p>
+            <h2>起動前の確認</h2>
+            <ul class="checklist">
+              <li>`LIVEAVATAR_API_KEY` を `.env` に入れる</li>
+              <li>標準構成なら `OPENAI_API_KEY` も設定する</li>
+              <li>通常は `LIVEAVATAR_SELF_CONTROLLED=true` で使う</li>
+              <li>必要なら `LIVEAVATAR_VOICE_ID` で声だけ上書きする</li>
+              <li>HTTPS か `localhost` でブラウザを開く</li>
+            </ul>
+            <div id="configWarning" class="callout hidden"></div>
+          </section>
+
+          <section class="info-card">
+            <p class="section-label">Runtime Log</p>
+            <h2>Client Events</h2>
+            <pre id="log"></pre>
+          </section>
+
+          <section class="info-card">
+            <p class="section-label">RAG Log</p>
+            <h2>Retrieval Events</h2>
+            <pre id="ragLog"></pre>
+          </section>
+        </aside>
+      </section>
+    </main>
+
+    <script src="/vendor/livekit-client/livekit-client.umd.js"></script>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

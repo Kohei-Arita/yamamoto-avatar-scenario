@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>X-Gate Output</title>
+    <link rel="stylesheet" href="/xgate.css" />
+  </head>
+  <body>
+    <main class="xgate-shell">
+      <div class="xgate-stage">
+        <video id="remoteVideo" autoplay playsinline></video>
+        <canvas id="remoteCanvas" class="hidden" aria-hidden="true"></canvas>
+        <audio id="remoteAudio" autoplay></audio>
+        <div id="videoPlaceholder" class="video-placeholder">WAITING FOR AVATAR...</div>
+        <div id="subtitleBox" class="subtitle-box hidden"></div>
+      </div>
+
+      <div class="hud">
+        <div class="hud-left">
+          <span class="badge">X-Gate Output</span>
+          <span class="badge">Connection: <strong id="connectionState">idle</strong></span>
+          <span class="badge">Mic: <strong id="micState">off</strong></span>
+        </div>
+
+        <div class="hud-right">
+          <button id="startBtn" class="primary-btn">Start</button>
+          <button id="stopBtn" class="secondary-btn" disabled>Stop</button>
+          <label class="toggle-badge" for="chromaKeyToggle">
+            <input id="chromaKeyToggle" type="checkbox" checked />
+            <span>Chroma</span>
+          </label>
+          <button id="fullscreenBtn" class="secondary-btn">Fullscreen</button>
+        </div>
+      </div>
+    </main>
+
+    <script src="/vendor/livekit-client/livekit-client.umd.js"></script>
+    <script type="module" src="/xgate.js"></script>
+  </body>
+</html>

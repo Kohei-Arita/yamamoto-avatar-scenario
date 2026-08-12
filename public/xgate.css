@@ -1,0 +1,205 @@
+:root {
+  --bg: #000;
+  --fg: #f6f6f6;
+  --muted: rgba(255, 255, 255, 0.72);
+  --line: rgba(255, 255, 255, 0.12);
+  --panel: rgba(255, 255, 255, 0.08);
+  --accent: #15b8aa;
+  --accent-strong: #0f9488;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+}
+
+button {
+  font: inherit;
+}
+
+.xgate-shell {
+  position: fixed;
+  inset: 0;
+  background: #000;
+}
+
+.xgate-stage {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: #000;
+}
+
+#remoteVideo,
+#remoteCanvas {
+  width: auto;
+  height: auto;
+  max-width: 82vw;
+  max-height: 82vh;
+  display: block;
+}
+
+#remoteVideo {
+  object-fit: contain;
+  filter: drop-shadow(0 0 24px rgba(21, 184, 170, 0.18));
+}
+
+.chroma-source-hidden {
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+}
+
+.video-placeholder {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 18px;
+  letter-spacing: 0.18em;
+}
+
+.subtitle-box {
+  position: absolute;
+  left: 50%;
+  bottom: 7vh;
+  transform: translateX(-50%);
+  width: min(74vw, 1100px);
+  padding: 14px 18px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(0, 0, 0, 0.62);
+  color: #fff;
+  text-align: center;
+  line-height: 1.5;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-size: clamp(18px, 2vw, 28px);
+}
+
+.hud {
+  position: absolute;
+  left: 20px;
+  right: 20px;
+  bottom: 20px;
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+  pointer-events: none;
+}
+
+.hud-left,
+.hud-right {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  pointer-events: auto;
+}
+
+.toggle-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: #fff;
+  backdrop-filter: blur(10px);
+}
+
+.toggle-badge input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  backdrop-filter: blur(10px);
+}
+
+.badge strong {
+  color: #fff;
+}
+
+button {
+  min-height: 42px;
+  padding: 10px 16px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: #fff;
+  cursor: pointer;
+  transition:
+    transform 140ms ease,
+    opacity 140ms ease,
+    background 140ms ease;
+}
+
+button:hover:enabled {
+  transform: translateY(-1px);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.primary-btn {
+  background: var(--accent);
+  border-color: transparent;
+}
+
+.primary-btn:hover:enabled {
+  background: var(--accent-strong);
+}
+
+.hidden {
+  display: none !important;
+}
+
+body.controls-hidden .hud {
+  opacity: 0;
+  transition: opacity 200ms ease;
+}
+
+@media (max-width: 900px) {
+  .hud {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .hud-right {
+    justify-content: stretch;
+  }
+
+  .hud-right button {
+    flex: 1;
+  }
+}
