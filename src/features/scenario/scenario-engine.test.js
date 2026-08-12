@@ -38,19 +38,18 @@ async function runScene1(engine, sessionId, voting1Branch) {
   result = await engine.handlePatientUtterance(sessionId, "はい、そのとおりです");
   assert.equal(result.nodeId, "s1_close");
 
-  // シーン2へ
+  // シーン2へ（s2_imaging →(auto)→ s2_pathology まで連続発話）
   result = engine.applyOperatorBranch(sessionId, "scene2");
-  assert.equal(result.nodeId, "s2_imaging");
+  assert.equal(result.nodeId, "s2_pathology");
   assert.equal(result.scene, 2);
 }
 
 async function runScene2(engine, sessionId, voting2Branch) {
-  // s2_imaging → s2_pathology
-  let result = await engine.handlePatientUtterance(sessionId, "はい、大丈夫です");
-  assert.equal(result.nodeId, "s2_pathology");
-
-  // 「手術で治りますか」→ s2_cure_answer →(auto)→ s2_values
-  result = await engine.handlePatientUtterance(sessionId, "手術で治りますか");
+  // 「手術で取れば治るのでしょうか」→ s2_cure_answer →(auto)→ s2_values
+  let result = await engine.handlePatientUtterance(
+    sessionId,
+    "やはり肺がんなのですね。手術で取れば治るのでしょうか"
+  );
   assert.equal(result.intent, "asks_cure");
   assert.equal(result.nodeId, "s2_values");
 
