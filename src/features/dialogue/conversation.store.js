@@ -7,7 +7,7 @@ function nowIso() {
 }
 
 function pruneSessions() {
-  while (sessions.size > env.ragSessionLimit) {
+  while (sessions.size > env.dialogueSessionLimit) {
     const oldestKey = sessions.keys().next().value;
 
     if (!oldestKey) {
@@ -57,7 +57,7 @@ function getOrCreateSession(sessionId) {
 }
 
 function trimMessages(messages) {
-  return messages.slice(-env.ragConversationHistoryLimit);
+  return messages.slice(-env.dialogueConversationHistoryLimit);
 }
 
 export function initializeConversationSession(sessionId, { openingGreeting } = {}) {

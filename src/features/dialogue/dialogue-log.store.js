@@ -16,19 +16,19 @@ export function bindDebugSession(sessionId, meta = {}) {
   });
 }
 
-export function appendRagLog(entry) {
+export function appendDialogueLog(entry) {
   logs.push({
     id: crypto.randomUUID(),
     timestamp: nowIso(),
     ...entry
   });
 
-  while (logs.length > env.ragLogLimit) {
+  while (logs.length > env.dialogueLogLimit) {
     logs.shift();
   }
 }
 
-export function getRagLogs(sessionId) {
+export function getDialogueLogs(sessionId) {
   const filtered = sessionId ? logs.filter((item) => item.sessionId === sessionId) : logs;
   return filtered.slice(-100);
 }

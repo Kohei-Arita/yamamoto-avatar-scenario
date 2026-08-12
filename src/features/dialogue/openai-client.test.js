@@ -48,10 +48,9 @@ test("falls back to non-stream completion when streaming fails before any delta"
   };
 
   try {
-    const content = await generateAssistantContent(
-      [{ role: "user", content: "テスト" }],
-      { onContentDelta: async () => {} }
-    );
+    const content = await generateAssistantContent([{ role: "user", content: "テスト" }], {
+      onContentDelta: async () => {}
+    });
 
     assert.equal(content, "フォールバック応答");
     assert.equal(callCount, 2);

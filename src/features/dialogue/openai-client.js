@@ -51,7 +51,7 @@ async function withRetry(fn, { maxRetries = MAX_RETRIES, signal } = {}) {
       const delay = RETRY_BASE_DELAY_MS * 2 ** attempt;
 
       console.warn(
-        "[rag] llm_retry",
+        "[dialogue] llm_retry",
         JSON.stringify({ attempt: attempt + 1, delay, error: error.message })
       );
 
@@ -107,10 +107,13 @@ export async function callUpstreamOpenAiStream(
 ) {
   const response = await withRetry(
     () =>
-      postChatCompletions(buildChatCompletionsPayload(messages, { temperature, model, stream: true }), {
-        signal,
-        errorMessage: "Upstream LLM stream failed"
-      }),
+      postChatCompletions(
+        buildChatCompletionsPayload(messages, { temperature, model, stream: true }),
+        {
+          signal,
+          errorMessage: "Upstream LLM stream failed"
+        }
+      ),
     { signal }
   );
 
@@ -194,7 +197,7 @@ export async function generateAssistantContent(
       }
 
       console.warn(
-        "[rag] upstream_stream_fallback",
+        "[dialogue] upstream_stream_fallback",
         JSON.stringify({
           message: error.message,
           details: error.details || null,

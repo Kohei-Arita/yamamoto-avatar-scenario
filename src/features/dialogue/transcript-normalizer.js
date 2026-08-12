@@ -38,6 +38,11 @@ export function normalizeMedicalTranscript(rawText, { historyMessages = [] } = {
 
   const rules = [
     {
+      name: "breathlessness_homophone",
+      test: /(行き|生き|息)切れ/u,
+      apply: (text) => text.replace(/(行き|生き)切れ/gu, "息切れ")
+    },
+    {
       name: "high_risk_group_homophone",
       test: /ハイリスク分/u,
       apply: (text) => text.replace(/ハイリスク分/gu, "ハイリスク群")
