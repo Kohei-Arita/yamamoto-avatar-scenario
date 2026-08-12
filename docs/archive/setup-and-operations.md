@@ -201,11 +201,11 @@ npm test
 | `LIVEAVATAR_VIDEO_QUALITY`                 | video quality                          | `medium`                                                                                              |
 | `LIVEAVATAR_VIDEO_ENCODING`                | video encoding                         | `H264`                                                                                                |
 | `LIVEAVATAR_SELF_CONTROLLED`               | self-controlled 有効化                 | `false`                                                                                               |
-| `LIVEAVATAR_VOICE_MODEL`                  | ElevenLabs TTS モデル名               | `eleven_multilingual_v2`                                                                              |
-| `LIVEAVATAR_VOICE_SPEED`                  | TTS 読み上げ速度                       | `0.9`                                                                                                 |
-| `LIVEAVATAR_VOICE_STABILITY`              | TTS 安定性 (0〜1)                      | `0.75`                                                                                                |
-| `LIVEAVATAR_VOICE_SIMILARITY_BOOST`       | TTS 類似性ブースト (0〜1)              | `0.75`                                                                                                |
-| `LIVEAVATAR_VOICE_STYLE`                  | TTS スタイル強度 (0〜1)                | `0.15`                                                                                                |
+| `LIVEAVATAR_VOICE_MODEL`                   | ElevenLabs TTS モデル名                | `eleven_multilingual_v2`                                                                              |
+| `LIVEAVATAR_VOICE_SPEED`                   | TTS 読み上げ速度                       | `0.9`                                                                                                 |
+| `LIVEAVATAR_VOICE_STABILITY`               | TTS 安定性 (0〜1)                      | `0.75`                                                                                                |
+| `LIVEAVATAR_VOICE_SIMILARITY_BOOST`        | TTS 類似性ブースト (0〜1)              | `0.75`                                                                                                |
+| `LIVEAVATAR_VOICE_STYLE`                   | TTS スタイル強度 (0〜1)                | `0.15`                                                                                                |
 | `LIVEAVATAR_TRANSCRIPT_DEBOUNCE_MS`        | transcription まとめ時間               | `1200`                                                                                                |
 | `LIVEAVATAR_TRANSCRIPT_CONTINUATION_MS`    | 発話継続とみなして前回文と連結する時間 | `1800`                                                                                                |
 | `LIVEAVATAR_ASSISTANT_NAME`                | 応答の人格名                           | `山本`                                                                                                |

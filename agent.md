@@ -7,14 +7,14 @@ README を置き換えるものではありません。ここには、毎回守�
 
 - 変更を小さく保ち、この repo の標準構成を壊さずに改善する
 - 実装、設定、README の説明を常に一致させる
-- デモとしての会話体験と医療ガイドライン参照の流れを崩さない
+- デモとしての会話体験とシナリオ進行(台本駆動)の流れを崩さない
 
 ## このプロジェクトの前提
 
 - Node.js 20 / ESM の Express アプリです
-- 主な体験は `HeyGen LiveAvatar + LiveKit + 自前 RAG` です
+- 主な体験は `HeyGen LiveAvatar + LiveKit + シナリオ状態機械` です
 - 現在の標準経路は `LIVEAVATAR_SELF_CONTROLLED=true` を前提にした self-controlled 構成です
-- ブラウザは表示だけでなく、transcription の集約、RAG 呼び出し、avatar への speak 制御も担います
+- ブラウザは表示だけでなく、transcription の集約、対話API呼び出し、avatar への speak 制御も担います
 - ルート `/` と不明パスは `/xgate` へリダイレクトされます
 
 詳細な構成、環境変数、運用手順は必ず `README.md` を参照してください。
@@ -29,7 +29,7 @@ README を置き換えるものではありません。ここには、毎回守�
 4. `public/xgate.js`
 5. `public/liveavatar-self-controller.js`
 6. `src/features/liveavatar/`
-7. `src/features/rag/`
+7. `src/features/scenario/` と `src/features/dialogue/`
 8. `.env.example`
 
 ## 変更の基本ルール
@@ -44,7 +44,7 @@ README を置き換えるものではありません。ここには、毎回守�
 
 ### 1. 標準経路を壊さない
 
-- まず守るべき主経路は `browser -> /api/liveavatar/* -> LiveKit -> /api/rag/respond/stream -> avatar.speak_text` です
+- まず守るべき主経路は `browser -> /api/liveavatar/* -> LiveKit -> /api/dialogue/respond/stream -> avatar.speak_text` です
 - built-in 会話や custom LLM 用のコードは残っていますが、現在の標準構成ではありません
 - 変更時は self-controlled 構成が引き続き成立するかを優先して確認してください
 
@@ -56,7 +56,7 @@ README を置き換えるものではありません。ここには、毎回守�
   - 環境変数
   - ルートや責務
   - ファイル構造
-  - RAG の処理フロー
+  - シナリオ進行(状態機械)の処理フロー
   - npm scripts
 
 ### 3. 医療デモとしての制約を意識する
@@ -68,7 +68,7 @@ README を置き換えるものではありません。ここには、毎回守�
 ### 4. フロントとサーバーの境界を崩しすぎない
 
 - ブラウザ側の会話制御は `public/` にあります
-- LiveAvatar API 呼び出しや RAG 本体は `src/features/` にあります
+- LiveAvatar API 呼び出しやシナリオエンジン本体は `src/features/` にあります
 - 変更時は、責務がどちらにあるべきかを確認してから実装する
 
 ### 5. 秘密情報を増やさない
@@ -97,6 +97,6 @@ README を置き換えるものではありません。ここには、毎回守�
 - README を更新せずに仕様変更だけを入れる
 - 無関係な大規模整形や広範囲リネームを同じ変更に含める
 - self-controlled 構成を壊す変更を、説明や移行手順なしで入れる
-- 検証なしで RAG の根拠データ形式や API 契約を変える
+- 検証なしでシナリオJSONのスキーマや API 契約(SSE `speech_segment` 形式)を変える
 
 不足があれば、このファイルに何でも足すのではなく、「繰り返し指摘が必要だったルール」だけを追加してください。

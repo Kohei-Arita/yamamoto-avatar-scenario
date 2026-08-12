@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: yamamotoavator-demo
+    name: yamamoto-avatar-scenario
     runtime: docker
     dockerfilePath: ./Dockerfile
     dockerContext: .
@@ -31,21 +31,23 @@ services:
         value: 山本
       - key: LIVEAVATAR_ASSISTANT_PERSONA
         value: 肺がん専門の内科医
-      - key: LIVEAVATAR_OPENING_GREETING
-        value: 内科医の山本です。今日はどうされましたか？
       - key: OPENAI_API_BASE_URL
         value: https://api.openai.com/v1
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_MODEL
         value: gpt-4.1-mini
-      - key: RAG_LLM_TRANSCRIPT_NORMALIZATION_ENABLED
+      - key: SCENARIO_ID
+        value: haigan-2026
+      - key: SCENARIO_DIR
+        value: ./data/scenarios
+      - key: SCENARIO_SPEECH_MODE
+        value: fixed
+      - key: SCENARIO_INTENT_LLM
         value: "true"
-      - key: RAG_LLM_TRANSCRIPT_NORMALIZATION_MODEL
-        value: gpt-4.1-mini
-      - key: RAG_TOP_K
-        value: "6"
-      - key: RAG_DATA_PATH
-        value: ./data/processed/lung-cancer-guideline-hybrid.jsonl
-      - key: RAG_ENDPOINT_API_KEY
+      - key: OPERATOR_TOKEN
+        sync: false
+      - key: DIALOGUE_LLM_TRANSCRIPT_NORMALIZATION_ENABLED
+        value: "false"
+      - key: DIALOGUE_ENDPOINT_API_KEY
         sync: false
