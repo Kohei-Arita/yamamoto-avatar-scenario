@@ -8,6 +8,12 @@ test("予後の断定要求は medical_advice に分類される", () => {
   assert.equal(classifyDeviation("治療の費用はいくらかかりますか"), "medical_advice");
 });
 
+test("薬剤選択・投与量・未承認治療の質問も medical_advice に分類される", () => {
+  assert.equal(classifyDeviation("どの薬を使うんですか"), "medical_advice");
+  assert.equal(classifyDeviation("投与量はどれくらいですか"), "medical_advice");
+  assert.equal(classifyDeviation("未承認の治療は受けられますか"), "medical_advice");
+});
+
 test("症例設定と矛盾する発言は case_conflict に分類される", () => {
   assert.equal(classifyDeviation("昔、肺の手術を受けたことがあります"), "case_conflict");
 });

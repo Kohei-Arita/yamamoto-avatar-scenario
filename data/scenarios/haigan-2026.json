@@ -69,13 +69,13 @@
       "scene": 1,
       "placeholder": true,
       "doctorLines": [
-        "そうでしたか。その症状については、あとで詳しくお聞かせください。",
-        "今日はまず、紹介元の先生からいただいている情報を中心に確認を進めさせてください。"
+        "そうでしたか。その症状については、後ほど詳しくお聞かせください。",
+        "普段の生活はいかがですか。"
       ],
       "advance": [
         {
-          "type": "auto",
-          "next": "s1_adl"
+          "type": "patient_any",
+          "next": "s1_voting1_wait"
         }
       ]
     },
@@ -88,18 +88,6 @@
       "advance": [
         {
           "type": "patient_any",
-          "next": "s1_adl_ack"
-        }
-      ]
-    },
-    {
-      "id": "s1_adl_ack",
-      "scene": 1,
-      "placeholder": true,
-      "doctorLines": ["わかりました。教えていただきありがとうございます。"],
-      "advance": [
-        {
-          "type": "auto",
           "next": "s1_voting1_wait"
         }
       ]

@@ -81,6 +81,19 @@ test("Voting①3分岐 × Voting②3分岐の9経路をすべて通せる", asyn
   }
 });
 
+test("症状ありと答えた場合はredirect経由でVoting①待機に合流する", async () => {
+  const engine = createScenarioEngine({ scenario });
+  const sessionId = newSessionId();
+
+  await engine.handlePatientUtterance(sessionId, "こんにちは");
+  let result = await engine.handlePatientUtterance(sessionId, "咳が少し出ます");
+  assert.equal(result.intent, "has_symptoms");
+  assert.equal(result.nodeId, "s1_symptoms_redirect");
+
+  result = await engine.handlePatientUtterance(sessionId, "普通に生活できています");
+  assert.equal(result.nodeId, "s1_voting1_wait");
+});
+
 test("operator遷移待ちノードで患者が発話するとhold応答を返し、状態は動かない", async () => {
   const engine = createScenarioEngine({ scenario });
   const sessionId = newSessionId();
