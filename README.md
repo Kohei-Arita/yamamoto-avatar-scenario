@@ -2,18 +2,43 @@
 
 肺癌学会ステージ企画向けの、**シナリオ駆動型AIアバター山本医師**デモです。
 
-架空症例（76歳男性・右下葉扁平上皮癌・UIPパターン間質性肺炎併存）の台本に沿ってのみ、問診・検査説明・治療方針説明を行います。会場Voting（①追加問診項目、②治療選択肢）による分岐は、オペレーターが手動で選択して進行します。
+架空症例（76歳男性・右下葉肺扁平上皮癌・UIPパターン間質性肺炎併存）の台本に沿ってのみ、問診・検査説明・治療方針説明を行います。台本外の質問には定型応答で受け止めて台本に復帰し、LLMに自由回答はさせません。
 
 > 本デモは学会の教育・演出用です。実診療・医学的助言は提供しません。
 
-旧リポジトリ（ガイドラインRAG版 `yamamotoavator-demo-`）から映像・音声・会話制御パイプラインを引き継ぎ、RAG検索をシナリオ状態機械に置き換えたものです。設計詳細は [docs/architecture.md](docs/architecture.md) を参照してください。
+## 全体の流れ
 
-## 構成
+```
+┌ シーン1 ─────────────────────────────────────────────┐
+│ 挨拶 → 症状確認 → 生活確認                              │
+│   → 🔘 Voting①「追加で問診してほしい項目」を会場に聞く      │
+│        A: 喫煙歴 / B: 職業歴 / C: 間質性肺炎の経過          │
+│   → 分岐問診 → 「ここから検査結果を一緒に確認しましょう」     │
+└──────────────────────────────────────────────────┘
+   🗣 「PET/CTの画像を提示します」の発話でシーン2へ
+┌ シーン2 ─────────────────────────────────────────────┐
+│ 画像所見 → 病理・診断 → 「手術で取れば治る?」への応答         │
+│   → 価値観確認（重視すること → リスク回避 → 結婚式）          │
+│   → 🔘 Voting②「どの治療方針を中心に説明するか」を会場に聞く   │
+│        A: 手術 / B: 放射線 / C: 薬物療法                   │
+│   → 治療説明 → クロージング（専門チームで検討・希望を踏まえる） │
+└──────────────────────────────────────────────────┘
+```
 
-- **LiveAvatar + LiveKit**: アバター映像・音声・文字起こし（旧版から変更なし）
-- **シナリオエンジン** (`src/features/scenario/`): `data/scenarios/haigan-2026.json` の有向グラフに沿って進行。台本外の発話には短い定型で受け止めて台本へ復帰
-- **対話API** (`src/features/dialogue/`): SSE `speech_segment` ストリーミング（旧RAG版とイベント形式完全互換）
-- **オペレーターAPI/画面** (`src/features/operator/`, `/operator`): Voting分岐選択・強制送り・再発話・ジャンプ・リセット
+- 🗣 = 患者（模擬患者役）の発話で自動進行
+- 🔘 = オペレーターが `/operator` 画面のボタン（またはxgateの`1/2/3`キー）で会場Votingの結果を反映。待機中は患者が何を話しても進行しない
+
+セリフとノードの対応・台本転記状況は **[docs/scenario-map.md](docs/scenario-map.md)** にまとめてあります。
+
+## 画面と役割
+
+| URL                             | 使う人         | 内容                                                         |
+| ------------------------------- | -------------- | ------------------------------------------------------------ |
+| `/xgate?autostart=1&controls=0` | 会場スクリーン | アバター全画面表示（クロマキー・字幕対応）                   |
+| `/operator`                     | 進行担当者     | 現在ノード・intent判定・Voting分岐ボタン・救済操作・進行ログ |
+| `/index.html`                   | 開発者         | デバッグ画面                                                 |
+
+`/xgate?optoken=<OPERATOR_TOKEN>` で開くと、同一PCから `1/2/3`=分岐選択、`n`=次へ（強制）、`r`=再発話 のキーボード操作も使えます。
 
 ## セットアップ
 
@@ -21,56 +46,57 @@
 npm install
 cp .env.example .env
 # .env に LIVEAVATAR_API_KEY / OPENAI_API_KEY / OPERATOR_TOKEN を設定
-npm run dev
+npm run dev   # → http://localhost:3000
 ```
-
-- 会場画面: `http://localhost:3000/xgate`（全画面・クロマキー対応。`?autostart=1&controls=0` 推奨）
-- オペレーター画面: `http://localhost:3000/operator`（`OPERATOR_TOKEN` で接続）
-- デバッグ画面: `http://localhost:3000/index.html`
-
-X-Gateとの接続手順は [X-GATE_connection.md](X-GATE_connection.md) を参照。
 
 ## 主要な環境変数
 
-| 変数                        | 説明                                                                    |
-| --------------------------- | ----------------------------------------------------------------------- |
-| `SCENARIO_ID`               | シナリオID（既定: `haigan-2026`）                                       |
-| `SCENARIO_DIR`              | シナリオJSONの配置先（既定: `./data/scenarios`）                        |
-| `SCENARIO_SPEECH_MODE`      | `fixed`（固定文・本番推奨）/ `paraphrase`（LLM言い換え+禁止語チェック） |
-| `SCENARIO_INTENT_LLM`       | ルール不一致時にLLMでintent分類するか                                   |
-| `OPERATOR_TOKEN`            | オペレーターAPIのBearerトークン（**必須**）                             |
-| `LIVEAVATAR_*` / `OPENAI_*` | 旧版と同じ（`.env.example` 参照）                                       |
+| 変数                        | 説明                                                                                  |
+| --------------------------- | ------------------------------------------------------------------------------------- |
+| `SCENARIO_ID`               | シナリオID（既定: `haigan-2026`）                                                     |
+| `SCENARIO_DIR`              | シナリオJSONの配置先（既定: `./data/scenarios`）                                      |
+| `SCENARIO_SPEECH_MODE`      | `fixed`（固定文・本番推奨）/ `paraphrase`（LLM言い換え+禁止語チェック、リハーサル用） |
+| `SCENARIO_INTENT_LLM`       | キーワード不一致時にLLMでintent分類するか（既定: true）                               |
+| `OPERATOR_TOKEN`            | オペレーターAPIのBearerトークン（**必須**。未設定だと操作APIは503）                   |
+| `LIVEAVATAR_*` / `OPENAI_*` | LiveAvatar・OpenAI接続設定（`.env.example` 参照）                                     |
 
-## シナリオの編集
+## 台本（シナリオ）の編集
 
-台本は `data/scenarios/haigan-2026.json` にすべて入っています。**セリフの修正・監修反映はこのJSONの編集だけで完結し、コード変更は不要です。**
+台本は `data/scenarios/haigan-2026.json` に**すべて**入っています。セリフの修正・監修反映はこのJSONの編集だけで完結し、コード変更は不要です。
 
-- `placeholder: true` が付いたノードは監修前の仮置きテキストです（Voting分岐の医学的内容を含む）。監修後に該当ノードの `doctorLines` を差し替えてください
-- ノード形式・遷移条件は [docs/architecture.md](docs/architecture.md) を参照
-- 起動時にスキーマ検証され、不正なJSONはエラーで停止します
+- `"placeholder": true` のノードは監修前の仮テキストです。どこが仮のままかは [docs/scenario-map.md](docs/scenario-map.md) を参照
+- 差し替え後は `npm test` で全経路（Voting①3分岐 × Voting②3分岐 = 9経路）の通過を自動確認できます
+- 起動時にスキーマ検証され、不正なJSON（未定義ノード参照など）はエラーで停止します
+- 新しい医療用語を足したら `src/features/dialogue/speech-pronunciation.js` に読み仮名を追加してください（字幕は漢字のまま、音声のみ読み仮名変換）
 
-## 進行オペレーション
+## 本番オペレーション
 
-1. `/operator` を開きトークンで接続
-2. Voting待機ノードに達すると分岐ボタン（A/B/C）が表示される → 会場の投票結果に合わせて押す
-3. 救済: 「次へ（強制）」「再発話」「ジャンプ」「リセット」
-4. `/xgate?optoken=<OPERATOR_TOKEN>` では同一PCから `1/2/3`=分岐、`n`=次へ、`r`=再発話のショートカットも使える
+1. `/operator` を開き `OPERATOR_TOKEN` で接続
+2. 進行がVoting待機に達すると分岐ボタン（A/B/C）が表示される → 会場の投票結果に合わせて押す
+3. シーン1→2の切替はボタン不要。進行役が「PET/CTの画像を提示します」と発話すれば自動で進む
+4. 救済操作: **次へ（強制）**=患者が固まったとき / **再発話**=聞き取れなかったとき / **ジャンプ**=任意ノードへ移動（再起動復帰・リハーサル用） / **リセット**=先頭へ
 
-**注意**: 進行状態はサーバーメモリのみで保持されます。再起動でリセットされるため、本番は単一インスタンスで運用し、復帰は「ジャンプ」を使ってください。
+**注意**: 進行状態はサーバーメモリのみで保持されます。再起動で先頭に戻るため、本番は単一インスタンスで運用し、復帰は「ジャンプ」を使ってください。
 
-## テスト
+リハーサル用の手動チェックリストは [docs/rehearsal.md](docs/rehearsal.md) にあります。
+
+## 台本外発話への応答（逸脱ハンドリング）
+
+予後・費用・薬剤選択などの断定を求められた場合は「専門チームで検討し、あらためてご説明します」で受け、現在の質問を再提示して台本に戻ります。雑談には一文で応じ、聞き取れない場合は聞き返します。分類ルールと定型文の一覧は [docs/scenario-map.md](docs/scenario-map.md) の末尾を参照してください。
+
+## テストと品質確認
 
 ```bash
-npm test   # スキーマ / エンジン(9経路) / intent / 逸脱 / SSE互換 / operator認証 / paraphraseフォールバック
+npm test        # 60件: スキーマ検証 / 9経路通し / intent分類 / 逸脱応答 / SSE互換 / operator認証 / paraphraseフォールバック
 npm run lint
+npm run format
 ```
-
-リハーサル用の手動チェックリストは [docs/rehearsal.md](docs/rehearsal.md)。
 
 ## デプロイ
 
-Render（Docker, 単一インスタンス）を想定。`render.yaml` を参照。`OPERATOR_TOKEN` / `LIVEAVATAR_API_KEY` / `OPENAI_API_KEY` はダッシュボードで設定してください。
+Render（Docker・単一インスタンス）を想定。`render.yaml` を参照し、`OPERATOR_TOKEN` / `LIVEAVATAR_API_KEY` / `OPENAI_API_KEY` はダッシュボードで設定してください。X-Gateとの接続手順は [X-GATE_connection.md](X-GATE_connection.md)。
 
-## 旧RAG版について
+## アーキテクチャ・経緯
 
-ガイドラインRAG関連のコード・データは削除済みです。旧設計資料は `docs/archive/` に残していますが現行実装とは一致しません。旧 `/api/rag/*` パスは互換aliasとして残っており、既存ブラウザコードはそのまま動作します。
+- 設計詳細: [docs/architecture.md](docs/architecture.md)
+- 本リポジトリは旧ガイドラインRAG版（`yamamotoavator-demo-`）から映像・音声・会話制御パイプラインを引き継ぎ、RAG検索をシナリオ状態機械に置き換えたものです。旧 `/api/rag/*` パスは互換aliasとして残っています。旧設計資料は `docs/archive/`（現行実装とは一致しません）
