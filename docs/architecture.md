@@ -39,7 +39,7 @@ public/operator.*         オペレーター画面
 - `advance` の遷移条件:
   - `patient_any`: 患者が何か発話したら次へ
   - `patient_intent`: intent分類結果で分岐（`keywords` によるルール層 → 不一致時のみLLM分類）
-  - `operator`: オペレーター操作でのみ遷移（Voting分岐・シーン切替）
+  - `operator`: オペレーター操作でのみ遷移（Voting分岐）
   - `auto`: 発話後に待たず次ノードへ連結
 - `advance: []` は終端ノード。
 - `placeholder: true` は監修前の仮置きテキスト。**監修後はJSONの該当ノードのテキストを差し替えるだけで更新できる（コード変更不要）**。

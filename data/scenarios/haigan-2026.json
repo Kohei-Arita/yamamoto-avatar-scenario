@@ -5,10 +5,7 @@
     "age": 76,
     "sex": "男性",
     "diagnosis": "右下葉肺扁平上皮癌、右肺門・#7リンパ節転移、遠隔転移なし",
-    "comorbidity": [
-      "高血圧症",
-      "UIPパターン線維化性間質性肺炎"
-    ],
+    "comorbidity": ["高血圧症", "UIPパターン線維化性間質性肺炎"],
     "labs": {
       "WBC": "5,050/μL",
       "Hb": "15.2 g/dL",
@@ -20,13 +17,8 @@
     "smoking": "40本/日×52年、現在喫煙",
     "occupation": "タクシードライバー、アスベスト曝露なし",
     "ipHistory": "在宅酸素なし・入院歴なし・坂道での息切れのみ",
-    "wishes": [
-      "リスクの高い治療は避けたい",
-      "3か月後の孫の結婚式に出席したい"
-    ],
-    "medication": [
-      "アムロジピン"
-    ],
+    "wishes": ["リスクの高い治療は避けたい", "3か月後の孫の結婚式に出席したい"],
+    "medication": ["アムロジピン"],
     "alcohol": "ビール500mL/日",
     "referral": "定期胸部X線検査で右下肺野に結節陰影を認め、肺がん疑いで専門施設へ紹介"
   },
@@ -56,35 +48,18 @@
     {
       "id": "s1_symptoms",
       "scene": 1,
-      "doctorLines": [
-        "現在、咳、痰、血痰、息切れ、胸の痛み、発熱、体重減少などはありますか。"
-      ],
+      "doctorLines": ["現在、咳、痰、血痰、息切れ、胸の痛み、発熱、体重減少などはありますか。"],
       "advance": [
         {
           "type": "patient_intent",
           "intent": "no_symptoms",
-          "keywords": [
-            "ない",
-            "ありません",
-            "特に",
-            "大丈夫"
-          ],
+          "keywords": ["ない", "ありません", "特に", "大丈夫"],
           "next": "s1_adl"
         },
         {
           "type": "patient_intent",
           "intent": "has_symptoms",
-          "keywords": [
-            "咳",
-            "せき",
-            "痰",
-            "たん",
-            "血",
-            "痛",
-            "熱",
-            "息切れ",
-            "体重"
-          ],
+          "keywords": ["咳", "せき", "痰", "たん", "血", "痛", "熱", "息切れ", "体重"],
           "next": "s1_symptoms_redirect"
         }
       ]
@@ -121,9 +96,7 @@
       "id": "s1_adl_ack",
       "scene": 1,
       "placeholder": true,
-      "doctorLines": [
-        "わかりました。教えていただきありがとうございます。"
-      ],
+      "doctorLines": ["わかりました。教えていただきありがとうございます。"],
       "advance": [
         {
           "type": "auto",
@@ -134,9 +107,7 @@
     {
       "id": "s1_voting1_wait",
       "scene": 1,
-      "doctorLines": [
-        "ここで、会場の皆さまに、追加で確認したい問診項目を伺います。"
-      ],
+      "doctorLines": ["ここで、会場の皆さまに、追加で確認したい問診項目を伺います。"],
       "advance": [
         {
           "type": "operator",
@@ -233,9 +204,7 @@
       "id": "v1_ip_history_ack",
       "scene": 1,
       "placeholder": true,
-      "doctorLines": [
-        "入院や在宅酸素はなく、坂道での息切れがある程度なのですね。わかりました。"
-      ],
+      "doctorLines": ["入院や在宅酸素はなく、坂道での息切れがある程度なのですね。わかりました。"],
       "advance": [
         {
           "type": "auto",
@@ -246,13 +215,12 @@
     {
       "id": "s1_close",
       "scene": 1,
-      "doctorLines": [
-        "ありがとうございます。ここから検査結果を一緒に確認しましょう。"
-      ],
+      "doctorLines": ["ありがとうございます。ここから検査結果を一緒に確認しましょう。"],
       "advance": [
         {
-          "type": "operator",
-          "branch": "scene2",
+          "type": "patient_intent",
+          "intent": "present_imaging",
+          "keywords": ["画像", "提示", "ペット", "PET", "CT", "シーティー", "けんさ", "検査"],
           "next": "s2_imaging"
         }
       ]
@@ -280,26 +248,13 @@
         {
           "type": "patient_intent",
           "intent": "asks_cure",
-          "keywords": [
-            "手術",
-            "治る",
-            "治り",
-            "取れ",
-            "取りき"
-          ],
+          "keywords": ["手術", "治る", "治り", "取れ", "取りき"],
           "next": "s2_cure_answer"
         },
         {
           "type": "patient_intent",
           "intent": "acknowledged",
-          "keywords": [
-            "はい",
-            "わかりました",
-            "大丈夫",
-            "ないです",
-            "ありません",
-            "特に"
-          ],
+          "keywords": ["はい", "わかりました", "大丈夫", "ないです", "ありません", "特に"],
           "next": "s2_values"
         }
       ]
@@ -360,9 +315,7 @@
       "id": "s2_voting2_wait",
       "scene": 2,
       "placeholder": true,
-      "doctorLines": [
-        "ここで、会場の皆さまに、どの治療方針を中心にご説明するかを伺います。"
-      ],
+      "doctorLines": ["ここで、会場の皆さまに、どの治療方針を中心にご説明するかを伺います。"],
       "advance": [
         {
           "type": "operator",
