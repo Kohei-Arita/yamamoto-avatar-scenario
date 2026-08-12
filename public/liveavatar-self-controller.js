@@ -470,7 +470,9 @@ export function createSelfControlledConversation({
 
       if (!pendingSpeechSegment) {
         if (hasCorrelationMeta(extractEventGenerationMeta(event)) || isWithinInterruptBarrier()) {
-          onLog(`avatar.speak_started ignored: ${JSON.stringify(extractEventGenerationMeta(event))}`);
+          onLog(
+            `avatar.speak_started ignored: ${JSON.stringify(extractEventGenerationMeta(event))}`
+          );
         }
         return;
       }

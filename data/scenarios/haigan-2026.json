@@ -1,0 +1,286 @@
+{
+  "id": "haigan-2026",
+  "title": "肺癌学会 AIアバター山本医師 模擬診療",
+  "caseFacts": {
+    "age": 76,
+    "sex": "男性",
+    "diagnosis": "右下葉肺扁平上皮癌、右肺門・#7リンパ節転移、遠隔転移なし",
+    "comorbidity": ["高血圧症", "UIPパターン線維化性間質性肺炎"],
+    "labs": { "CEA": "2.4 ng/mL", "CYFRA": "8.1 ng/mL", "ProGRP": "36.0 pg/mL" },
+    "imaging": "右下葉40mm結節 SUVmax14.5、右肺門・#7リンパ節FDG集積、遠隔転移なし",
+    "smoking": "40本/日×52年、現在喫煙",
+    "occupation": "タクシードライバー、アスベスト曝露なし",
+    "ipHistory": "在宅酸素なし・入院歴なし・坂道での息切れのみ",
+    "wishes": ["リスクの高い治療は避けたい", "3か月後の孫の結婚式に出席したい"]
+  },
+  "globalDeviationReplies": {
+    "medical_advice": "ご心配なお気持ち、よくわかります。大切なことですので、詳しくは専門のチームで検討し、あらためてご説明しますね。",
+    "case_conflict": "そうでしたか。今日は、紹介元の先生からいただいている情報を中心に、確認を進めさせてください。",
+    "off_topic": "そうなんですね。ありがとうございます。",
+    "unclear": "すみません、もう一度お聞かせいただけますか。",
+    "hold": "ただいま会場の皆さまにお伺いしていますので、少しだけお待ちくださいね。",
+    "closed": "本日の診察はここまでです。ありがとうございました。"
+  },
+  "nodes": [
+    {
+      "id": "s1_greeting",
+      "scene": 1,
+      "doctorLines": [
+        "こんにちは。山本です。本日はよろしくお願いします。",
+        "今日は、紹介元の先生から右の肺に影があるということで受診されていますね。"
+      ],
+      "advance": [{ "type": "patient_any", "next": "s1_symptoms" }]
+    },
+    {
+      "id": "s1_symptoms",
+      "scene": 1,
+      "doctorLines": ["現在、咳、痰、血痰、息切れ、胸の痛み、発熱、体重減少などはありますか。"],
+      "advance": [
+        {
+          "type": "patient_intent",
+          "intent": "no_symptoms",
+          "keywords": ["ない", "ありません", "特に", "大丈夫"],
+          "next": "s1_adl"
+        },
+        {
+          "type": "patient_intent",
+          "intent": "has_symptoms",
+          "keywords": ["咳", "せき", "痰", "たん", "血", "痛", "熱", "息切れ", "体重"],
+          "next": "s1_symptoms_redirect"
+        }
+      ]
+    },
+    {
+      "id": "s1_symptoms_redirect",
+      "scene": 1,
+      "placeholder": true,
+      "doctorLines": [
+        "そうでしたか。その症状については、あとで詳しくお聞かせください。",
+        "今日はまず、紹介元の先生からいただいている情報を中心に確認を進めさせてください。"
+      ],
+      "advance": [{ "type": "auto", "next": "s1_adl" }]
+    },
+    {
+      "id": "s1_adl",
+      "scene": 1,
+      "placeholder": true,
+      "doctorLines": [
+        "ふだんの生活についても教えてください。坂道や階段をのぼるとき、息切れを感じることはありますか。"
+      ],
+      "advance": [{ "type": "patient_any", "next": "s1_adl_ack" }]
+    },
+    {
+      "id": "s1_adl_ack",
+      "scene": 1,
+      "placeholder": true,
+      "doctorLines": ["わかりました。教えていただきありがとうございます。"],
+      "advance": [{ "type": "auto", "next": "s1_voting1_wait" }]
+    },
+    {
+      "id": "s1_voting1_wait",
+      "scene": 1,
+      "doctorLines": ["ここで、会場の皆さまに、追加で確認したい問診項目を伺います。"],
+      "advance": [
+        { "type": "operator", "branch": "voting1_A", "next": "v1_smoking" },
+        { "type": "operator", "branch": "voting1_B", "next": "v1_occupation" },
+        { "type": "operator", "branch": "voting1_C", "next": "v1_ip_history" }
+      ]
+    },
+    {
+      "id": "v1_smoking",
+      "scene": 1,
+      "placeholder": true,
+      "doctorLines": [
+        "会場からは、喫煙歴について詳しく、というご意見をいただきました。",
+        "たばこは、1日にどのくらい、何年くらい吸われていますか。"
+      ],
+      "advance": [{ "type": "patient_any", "next": "v1_smoking_ack" }]
+    },
+    {
+      "id": "v1_smoking_ack",
+      "scene": 1,
+      "placeholder": true,
+      "doctorLines": [
+        "1日40本を、52年間ですね。教えていただきありがとうございます。",
+        "たばこは肺への負担になりますので、これからの治療のためにも、禁煙を一緒に進めていきましょう。"
+      ],
+      "advance": [{ "type": "auto", "next": "s1_close" }]
+    },
+    {
+      "id": "v1_occupation",
+      "scene": 1,
+      "placeholder": true,
+      "doctorLines": [
+        "会場からは、お仕事の内容について、というご意見をいただきました。",
+        "これまで、どのようなお仕事をされてきましたか。粉じんやアスベストを扱う機会はありましたか。"
+      ],
+      "advance": [{ "type": "patient_any", "next": "v1_occupation_ack" }]
+    },
+    {
+      "id": "v1_occupation_ack",
+      "scene": 1,
+      "placeholder": true,
+      "doctorLines": [
+        "長くタクシーの運転手をされていて、アスベストを扱うお仕事ではなかったのですね。わかりました。"
+      ],
+      "advance": [{ "type": "auto", "next": "s1_close" }]
+    },
+    {
+      "id": "v1_ip_history",
+      "scene": 1,
+      "placeholder": true,
+      "doctorLines": [
+        "会場からは、間質性肺炎のこれまでの経過について、というご意見をいただきました。",
+        "以前から間質性肺炎を指摘されていたと伺っています。これまでに、入院や在宅酸素が必要になったことはありますか。"
+      ],
+      "advance": [{ "type": "patient_any", "next": "v1_ip_history_ack" }]
+    },
+    {
+      "id": "v1_ip_history_ack",
+      "scene": 1,
+      "placeholder": true,
+      "doctorLines": ["入院や在宅酸素はなく、坂道での息切れがある程度なのですね。わかりました。"],
+      "advance": [{ "type": "auto", "next": "s1_close" }]
+    },
+    {
+      "id": "s1_close",
+      "scene": 1,
+      "placeholder": true,
+      "doctorLines": ["ありがとうございます。それでは、検査の結果を一緒に確認していきましょう。"],
+      "advance": [{ "type": "operator", "branch": "scene2", "next": "s2_imaging" }]
+    },
+    {
+      "id": "s2_imaging",
+      "scene": 2,
+      "placeholder": true,
+      "doctorLines": [
+        "こちらが胸のCTの画像です。右の肺の下のほう、右下葉に、約40ミリの影があります。",
+        "PETの検査では、この影に、SUVmaxという集積の値が14.5と強い集まりがみられ、右の肺門と、気管の分かれ目にある7番のリンパ節にも、同じような集まりがあります。",
+        "からだのほかの場所への広がり、遠隔転移は認めていません。",
+        "また、肺の下のほうを中心に、以前から指摘されている間質性肺炎の変化もみられます。",
+        "ここまでで、ご不明な点はありますか。"
+      ],
+      "advance": [{ "type": "patient_any", "next": "s2_pathology" }]
+    },
+    {
+      "id": "s2_pathology",
+      "scene": 2,
+      "placeholder": true,
+      "doctorLines": [
+        "先日、気管支鏡を使ったEBUS-TBNAという検査で、リンパ節から細胞を採取しました。",
+        "その結果、扁平上皮癌という種類の肺がんであることがわかりました。",
+        "ここまでで、お聞きになりたいことはありますか。"
+      ],
+      "advance": [
+        {
+          "type": "patient_intent",
+          "intent": "asks_cure",
+          "keywords": ["手術", "治る", "治り", "取れ", "取りき"],
+          "next": "s2_cure_answer"
+        },
+        {
+          "type": "patient_intent",
+          "intent": "acknowledged",
+          "keywords": ["はい", "わかりました", "大丈夫", "ないです", "ありません", "特に"],
+          "next": "s2_values"
+        }
+      ]
+    },
+    {
+      "id": "s2_cure_answer",
+      "scene": 2,
+      "placeholder": true,
+      "doctorLines": [
+        "手術で病気を取りきれる可能性はあります。",
+        "ただ、間質性肺炎がありますので、手術のあとに肺炎が急に悪くなるリスクを、あわせて考える必要があります。",
+        "治すことだけでなく、安全に治療を受けていただけるかどうかを、専門のチームで慎重に検討していきます。"
+      ],
+      "advance": [{ "type": "auto", "next": "s2_values" }]
+    },
+    {
+      "id": "s2_values",
+      "scene": 2,
+      "placeholder": true,
+      "doctorLines": [
+        "ここからは、治療の考え方についてお伺いします。治療を受けるうえで、いちばん大切にしたいことを教えていただけますか。"
+      ],
+      "advance": [{ "type": "patient_any", "next": "s2_values_risk_ack" }]
+    },
+    {
+      "id": "s2_values_risk_ack",
+      "scene": 2,
+      "placeholder": true,
+      "doctorLines": [
+        "リスクの高い治療はできるだけ避けたい、というお気持ちなのですね。わかりました。",
+        "ほかに、これだけは大切にしたい、というご予定やご希望はありますか。"
+      ],
+      "advance": [{ "type": "patient_any", "next": "s2_values_wedding_ack" }]
+    },
+    {
+      "id": "s2_values_wedding_ack",
+      "scene": 2,
+      "placeholder": true,
+      "doctorLines": [
+        "3か月後に、お孫さんの結婚式があるのですね。それは何より楽しみですね。",
+        "そのご希望も大切にしながら、治療の方針を一緒に考えていきます。"
+      ],
+      "advance": [{ "type": "auto", "next": "s2_voting2_wait" }]
+    },
+    {
+      "id": "s2_voting2_wait",
+      "scene": 2,
+      "placeholder": true,
+      "doctorLines": ["ここで、会場の皆さまに、どの治療方針を中心にご説明するかを伺います。"],
+      "advance": [
+        { "type": "operator", "branch": "voting2_A", "next": "v2_surgery" },
+        { "type": "operator", "branch": "voting2_B", "next": "v2_radiation" },
+        { "type": "operator", "branch": "voting2_C", "next": "v2_chemo" }
+      ]
+    },
+    {
+      "id": "v2_surgery",
+      "scene": 2,
+      "placeholder": true,
+      "doctorLines": [
+        "会場では、手術を軸とした方針、というご意見が多いようです。",
+        "手術は、病気を取りきれる可能性がある治療です。いっぽうで、間質性肺炎をお持ちの方では、手術のあとに肺炎が急に悪くなる、急性増悪と呼ばれるリスクが知られています。",
+        "そのため、外科と呼吸器内科のチームで、からだへの負担と安全性を慎重に評価したうえで、進め方をご相談していきます。"
+      ],
+      "advance": [{ "type": "auto", "next": "s2_closing" }]
+    },
+    {
+      "id": "v2_radiation",
+      "scene": 2,
+      "placeholder": true,
+      "doctorLines": [
+        "会場では、放射線治療を軸とした方針、というご意見が多いようです。",
+        "放射線治療は、からだを切らずに、病気の場所を狙って治療する方法です。いっぽうで、放射線による肺臓炎という肺の炎症が起こることがあり、間質性肺炎をお持ちの方では、特に慎重な判断が必要とされています。",
+        "照射の範囲や方法を含めて、放射線治療の専門チームと相談しながら検討していきます。"
+      ],
+      "advance": [{ "type": "auto", "next": "s2_closing" }]
+    },
+    {
+      "id": "v2_chemo",
+      "scene": 2,
+      "placeholder": true,
+      "doctorLines": [
+        "会場では、お薬による治療を軸とした方針、というご意見が多いようです。",
+        "お薬の治療には、いくつかの種類があります。いっぽうで、お薬による肺障害のリスクがあり、特に免疫チェックポイント阻害薬というお薬では、間質性肺炎をお持ちの方への使い方に注意が必要とされています。",
+        "どのお薬が適しているかは、からだの状態をみながら、専門のチームで慎重に検討していきます。"
+      ],
+      "advance": [{ "type": "auto", "next": "s2_closing" }]
+    },
+    {
+      "id": "s2_closing",
+      "scene": 2,
+      "placeholder": true,
+      "doctorLines": [
+        "本日の内容をふまえて、治療の方針は、外科、放射線科、呼吸器内科などの専門チームであらためて検討し、次回ご説明します。",
+        "リスクの高い治療は避けたいというお気持ちと、3か月後のお孫さんの結婚式へのご出席というご希望を、大切にしながら考えていきます。",
+        "本日はありがとうございました。お大事になさってください。"
+      ],
+      "advance": []
+    }
+  ],
+  "entryNode": "s1_greeting"
+}

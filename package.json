@@ -1,9 +1,9 @@
 {
-  "name": "yamamotoavator-demo",
+  "name": "yamamoto-avatar-scenario",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Sandbox-ready HeyGen LiveAvatar demo for a professor avatar project.",
+  "description": "肺癌学会デモ用 シナリオ駆動AIアバター山本医師 (HeyGen LiveAvatar + LiveKit)",
   "engines": {
     "node": ">=20.0.0"
   },
@@ -15,9 +15,6 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier . --write",
     "format:check": "prettier . --check",
-    "ingest:haigan-2025": "node scripts/ingest-haigan-2025.mjs",
-    "ingest:haigan-hybrid": "node scripts/ingest-haigan-hybrid.mjs",
-    "validate:guidelines": "node scripts/validate-guideline-jsonl.mjs data/processed/lung-cancer-guideline-hybrid.jsonl",
     "provision:liveavatar-llm": "node scripts/provision-liveavatar-custom-llm.mjs",
     "inspect:liveavatar-llm": "node scripts/inspect-liveavatar-llm.mjs",
     "update:liveavatar-llm": "node scripts/update-liveavatar-llm.mjs"

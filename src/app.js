@@ -4,7 +4,8 @@ import cors from "cors";
 import express from "express";
 import healthRoutes from "./features/health/health.routes.js";
 import liveAvatarRoutes from "./features/liveavatar/liveavatar.routes.js";
-import ragRoutes from "./features/rag/rag.routes.js";
+import dialogueRoutes from "./features/dialogue/dialogue.routes.js";
+import operatorRoutes from "./features/operator/operator.routes.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,10 +27,15 @@ app.use(
 
 app.use("/api", healthRoutes);
 app.use("/api", liveAvatarRoutes);
-app.use(ragRoutes);
+app.use(dialogueRoutes);
+app.use(operatorRoutes);
 
 app.get("/xgate", (req, res) => {
   res.sendFile(path.join(projectRoot, "public", "xgate.html"));
+});
+
+app.get("/operator", (req, res) => {
+  res.sendFile(path.join(projectRoot, "public", "operator.html"));
 });
 
 app.get("*", (req, res) => {

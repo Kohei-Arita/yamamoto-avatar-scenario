@@ -1,4 +1,5 @@
 import env, { assertRuntimeConfig } from "../../config/env.js";
+import { getScenarioOpeningGreeting } from "../scenario/scenario-loader.js";
 import { requestLiveAvatar } from "./liveavatar-api.js";
 
 function buildVoiceSettings() {
@@ -36,6 +37,22 @@ function getDefaultVideoSettings() {
   };
 }
 
+function resolveOpeningGreeting() {
+  if (env.liveAvatarOpeningGreeting) {
+    return env.liveAvatarOpeningGreeting;
+  }
+
+  try {
+    return getScenarioOpeningGreeting();
+  } catch (error) {
+    console.warn(
+      "[liveavatar] opening_greeting_scenario_error",
+      JSON.stringify({ message: error.message })
+    );
+    return "";
+  }
+}
+
 export function getPublicConfig() {
   return {
     avatarId: env.liveAvatarAvatarId,
@@ -47,7 +64,7 @@ export function getPublicConfig() {
     transcriptContinuationMs: env.liveAvatarTranscriptContinuationMs,
     assistantName: env.liveAvatarAssistantName,
     assistantPersona: env.liveAvatarAssistantPersona,
-    openingGreeting: env.liveAvatarOpeningGreeting,
+    openingGreeting: resolveOpeningGreeting(),
     hasVoiceId: Boolean(env.liveAvatarVoiceId),
     hasContextId: Boolean(env.liveAvatarContextId),
     hasLlmConfigurationId: Boolean(env.liveAvatarLlmConfigurationId)

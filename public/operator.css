@@ -1,0 +1,184 @@
+.operator-body {
+  background: #101418;
+  color: #e8ecf1;
+  font-family: "Hiragino Sans", "Noto Sans JP", sans-serif;
+  margin: 0;
+  padding: 16px;
+}
+
+.operator-main {
+  max-width: 1080px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.operator-main h1 {
+  font-size: 20px;
+  margin: 0;
+}
+
+.operator-main h2 {
+  font-size: 15px;
+  margin: 0 0 8px;
+}
+
+.operator-main h3 {
+  font-size: 13px;
+  margin: 12px 0 4px;
+}
+
+.operator-note {
+  font-size: 12px;
+  color: #f0b429;
+  margin: 0;
+}
+
+.operator-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+@media (max-width: 800px) {
+  .operator-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.operator-panel {
+  background: #1a2027;
+  border: 1px solid #2c333d;
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.operator-panel label {
+  margin-right: 8px;
+  font-size: 13px;
+}
+
+.operator-panel input,
+.operator-panel select {
+  background: #10151b;
+  color: #e8ecf1;
+  border: 1px solid #3a424d;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.operator-panel button {
+  background: #2563eb;
+  border: none;
+  border-radius: 6px;
+  color: #fff;
+  padding: 9px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  margin-left: 6px;
+}
+
+.operator-panel button:hover {
+  background: #1d4ed8;
+}
+
+.operator-panel button.danger {
+  background: #b91c1c;
+}
+
+.operator-panel button:disabled {
+  background: #3a424d;
+  cursor: not-allowed;
+}
+
+.operator-muted {
+  color: #8b98a5;
+  font-size: 12px;
+}
+
+.operator-state {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 4px 8px;
+  font-size: 13px;
+  margin: 0;
+}
+
+.operator-state dt {
+  color: #8b98a5;
+}
+
+.operator-state dd {
+  margin: 0;
+  word-break: break-all;
+}
+
+.operator-lines {
+  font-size: 13px;
+  line-height: 1.7;
+  background: #10151b;
+  border-radius: 6px;
+  padding: 10px;
+  white-space: pre-wrap;
+}
+
+.operator-branches {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.operator-branches button {
+  margin: 0;
+  padding: 14px;
+  font-size: 15px;
+  text-align: left;
+}
+
+.operator-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.operator-actions button {
+  margin: 0;
+}
+
+.operator-jump {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.operator-jump select {
+  flex: 1;
+}
+
+.operator-logs {
+  font-size: 12px;
+  max-height: 320px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.operator-log-entry {
+  background: #10151b;
+  border-radius: 6px;
+  padding: 8px 10px;
+  line-height: 1.5;
+}
+
+.operator-log-entry .meta {
+  color: #8b98a5;
+}
+
+.operator-log-entry .deviation {
+  color: #f87171;
+}

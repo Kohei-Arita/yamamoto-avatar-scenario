@@ -30,23 +30,24 @@ const env = {
   liveAvatarTranscriptContinuationMs: int("LIVEAVATAR_TRANSCRIPT_CONTINUATION_MS", "1800"),
   liveAvatarAssistantName: str("LIVEAVATAR_ASSISTANT_NAME", "山本"),
   liveAvatarAssistantPersona: str("LIVEAVATAR_ASSISTANT_PERSONA", "肺がん専門の内科医"),
-  liveAvatarOpeningGreeting: str(
-    "LIVEAVATAR_OPENING_GREETING",
-    "内科医の山本です。ガイドラインをもとに一般的な説明をします。今日はどうされましたか？"
+  liveAvatarOpeningGreeting: str("LIVEAVATAR_OPENING_GREETING", ""),
+  scenarioId: str("SCENARIO_ID", "haigan-2026"),
+  scenarioDir: str("SCENARIO_DIR", "./data/scenarios"),
+  scenarioSpeechMode: str("SCENARIO_SPEECH_MODE", "fixed"),
+  scenarioIntentLlm: bool("SCENARIO_INTENT_LLM", "true"),
+  operatorToken: str("OPERATOR_TOKEN"),
+  dialogueLogLimit: int("DIALOGUE_LOG_LIMIT", "200"),
+  dialogueLlmTranscriptNormalizationEnabled: bool(
+    "DIALOGUE_LLM_TRANSCRIPT_NORMALIZATION_ENABLED",
+    "false"
   ),
-  ragEnabled: bool("RAG_ENABLED", "true"),
-  ragDataPath: str("RAG_DATA_PATH", "./data/processed/lung-cancer-guideline-hybrid.jsonl"),
-  ragTopK: int("RAG_TOP_K", "6"),
-  ragLogLimit: int("RAG_LOG_LIMIT", "200"),
-  ragMinScore: int("RAG_MIN_SCORE", "2"),
-  ragLlmTranscriptNormalizationEnabled: bool("RAG_LLM_TRANSCRIPT_NORMALIZATION_ENABLED", "true"),
-  ragLlmTranscriptNormalizationModel: str(
-    "RAG_LLM_TRANSCRIPT_NORMALIZATION_MODEL",
+  dialogueLlmTranscriptNormalizationModel: str(
+    "DIALOGUE_LLM_TRANSCRIPT_NORMALIZATION_MODEL",
     str("OPENAI_MODEL", "gpt-4.1-mini")
   ),
-  ragConversationHistoryLimit: int("RAG_CONVERSATION_HISTORY_LIMIT", "12"),
-  ragSessionLimit: int("RAG_SESSION_LIMIT", "200"),
-  ragEndpointApiKey: str("RAG_ENDPOINT_API_KEY"),
+  dialogueConversationHistoryLimit: int("DIALOGUE_CONVERSATION_HISTORY_LIMIT", "12"),
+  dialogueSessionLimit: int("DIALOGUE_SESSION_LIMIT", "200"),
+  dialogueEndpointApiKey: str("DIALOGUE_ENDPOINT_API_KEY", str("RAG_ENDPOINT_API_KEY")),
   openAiApiBaseUrl: str("OPENAI_API_BASE_URL", "https://api.openai.com/v1"),
   openAiApiKey: str("OPENAI_API_KEY"),
   openAiModel: str("OPENAI_MODEL", "gpt-4.1-mini")
@@ -60,6 +61,12 @@ export function assertRuntimeConfig() {
 
   if (missing.length > 0) {
     throw new Error(`Missing required environment variables: ${missing.join(", ")}`);
+  }
+
+  if (!["fixed", "paraphrase"].includes(env.scenarioSpeechMode)) {
+    throw new Error(
+      `SCENARIO_SPEECH_MODE must be "fixed" or "paraphrase" (got "${env.scenarioSpeechMode}")`
+    );
   }
 }
 
