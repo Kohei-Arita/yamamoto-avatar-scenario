@@ -194,13 +194,26 @@ export function createSelfControlledConversation({
     }, estimateSpeechDurationMs(segment.speechText));
   }
 
-  // speak_started が届かない場合に、発話中とみなしてキューを止めない。
+  // speak_started が届かない場合の保険。
+  // 1回目: speak_textコマンド自体が失われた可能性(エージェント入室前など)があるため再送する。
+  // 2回目: 発話中とみなしてキューを止めない。
   function startSpeakStartWatchdog(segment) {
     clearTimeout(speakStartWatchdogTimer);
     speakStartWatchdogTimer = setTimeout(() => {
       speakStartWatchdogTimer = null;
 
       if (pendingSpeechSegment !== segment) {
+        return;
+      }
+
+      if (!segment.dispatchRetried) {
+        segment.dispatchRetried = true;
+        onLog(`watchdog.speak_start_retry: ${segment.speechText}`);
+        pendingSpeechSegment = null;
+        speechQueue.unshift(segment);
+        dispatchNextSpeech().catch((error) => {
+          onError(error);
+        });
         return;
       }
 

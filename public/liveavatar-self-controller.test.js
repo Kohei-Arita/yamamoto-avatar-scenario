@@ -220,6 +220,44 @@ test("matches avatar lifecycle events by echoed client ids before advancing the 
   assert.equal(publishedEvents[1].text, "次の文です。");
 });
 
+test("speak_started未着時はspeak_textを一度だけ自動再送する(開始挨拶の無音対策)", async () => {
+  const { room, publishedEvents } = createRoomWithPublishedEvents();
+  const startedSubtitles = [];
+  const conversation = createSelfControlledConversation({
+    getRoom: () => room,
+    getSessionId: () => "session-speak-retry",
+    respondToTextStream: async () => ({ content: "" }),
+    speakStartTimeoutMs: 30,
+    speakEndTimeoutBaseMs: 200,
+    speakEndTimeoutPerCharMs: 0,
+    onSpeechStart: (text) => startedSubtitles.push(text)
+  });
+
+  await conversation.speakText("こんにちは。山本です。");
+  assert.equal(publishedEvents.length, 1);
+
+  // speak_startedが届かないままタイムアウト → 同じsegmentIdで再送される
+  await wait(50);
+
+  const speakEvents = publishedEvents.filter((event) => event.event_type === "avatar.speak_text");
+  assert.equal(speakEvents.length, 2);
+  assert.equal(speakEvents[0].client_segment_id, speakEvents[1].client_segment_id);
+
+  // 再送分にspeak_startedが返れば通常どおり発話開始扱いになる
+  conversation.handleAgentResponseEvent({
+    event_type: "avatar.speak_started",
+    client_segment_id: speakEvents[1].client_segment_id
+  });
+  assert.deepEqual(startedSubtitles, ["こんにちは。山本です。"]);
+
+  // 3回目の再送はしない
+  await wait(50);
+  assert.equal(
+    publishedEvents.filter((event) => event.event_type === "avatar.speak_text").length,
+    2
+  );
+});
+
 test("speak_started/endedが届かなくてもウォッチドッグでキューが前進する", async () => {
   const { room, publishedEvents } = createRoomWithPublishedEvents();
   const conversation = createSelfControlledConversation({
@@ -237,11 +275,14 @@ test("speak_started/endedが届かなくてもウォッチドッグでキュー�
   assert.equal(publishedEvents.length, 1);
 
   // アバターからのライフサイクルイベントが一切届かなくても、
-  // start/endウォッチドッグの経過後に次のセグメントが送出される
-  await wait(120);
+  // 再送(1回)→発話中とみなす→endウォッチドッグの経過後に次のセグメントへ前進する
+  await wait(200);
 
-  assert.equal(publishedEvents.length, 2);
-  assert.equal(publishedEvents[1].text, "二文目です。");
+  const texts = publishedEvents
+    .filter((event) => event.event_type === "avatar.speak_text")
+    .map((event) => event.text);
+  assert.equal(texts.filter((text) => text === "一文目です。").length, 2);
+  assert.ok(texts.includes("二文目です。"));
 });
 
 test("アバター発話のエコー(回り込み文字起こし)を患者発話として扱わない", async () => {

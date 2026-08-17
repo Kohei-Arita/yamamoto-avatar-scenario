@@ -54,6 +54,39 @@ export function createSessionManager({
   // stop()のたびに増える世代番号。start処理は各await後にこれを確認し、
   // 処理中にstopが割り込んでいたら安全に中断する(半端な起動状態を防ぐ)。
   let lifecycleEpoch = 0;
+  // アバターの音声トラックが届いた(=HeyGenエージェントが入室済み)ことを知らせる。
+  // これを待たずに挨拶のspeak_textを送ると、エージェント入室前でコマンドが失われ
+  // 開始挨拶が無音になることがある。
+  let notifyAvatarAudioReady = () => {};
+
+  const AVATAR_MEDIA_READY_TIMEOUT_MS = 10_000;
+  const AVATAR_MEDIA_READY_GRACE_MS = 400;
+
+  function createAvatarAudioReadyPromise() {
+    return new Promise((resolve) => {
+      notifyAvatarAudioReady = resolve;
+    });
+  }
+
+  async function waitForAvatarAudio(readyPromise) {
+    const ready = await Promise.race([
+      readyPromise.then(() => true),
+      new Promise((resolve) => {
+        setTimeout(() => resolve(false), AVATAR_MEDIA_READY_TIMEOUT_MS);
+      })
+    ]);
+
+    if (!ready) {
+      onLog("avatar audio track not detected before greeting (timeout, continuing)");
+      return;
+    }
+
+    // トラック公開直後はエージェント側のコマンド受信準備が整いきっていない
+    // ことがあるため、わずかに待ってから挨拶を送る。
+    await new Promise((resolve) => {
+      setTimeout(resolve, AVATAR_MEDIA_READY_GRACE_MS);
+    });
+  }
 
   const sessionStartLock = createSessionStartLock();
   const sessionLockHeartbeat = createSessionLockHeartbeat(sessionStartLock);
@@ -75,6 +108,7 @@ export function createSessionManager({
     remoteAudio,
     videoPlaceholder,
     onVideoTrackAttached: updateChromaKey,
+    onAudioTrackAttached: () => notifyAvatarAudioReady(),
     onAudioBlocked
   });
 
@@ -219,6 +253,8 @@ export function createSessionManager({
         const session = await startLiveAvatarSession(sessionToken);
         ensureNotStopped();
 
+        // 接続前にpromiseを作っておく(接続処理内のattachExistingTracksで即解決されうる)
+        const avatarAudioReady = createAvatarAudioReadyPromise();
         await internalConnectRoom(session.livekit_url, session.livekit_token);
         ensureNotStopped();
 
@@ -245,6 +281,11 @@ export function createSessionManager({
             selfControlledConversation?.speakText(segment).catch(onError);
           }
         });
+
+        // アバターの音声トラック到着(=エージェント入室)を待ってから開始挨拶を送る。
+        await waitForAvatarAudio(avatarAudioReady);
+        ensureNotStopped();
+
         await startOpeningGreeting({
           liveAvatarConfig: config,
           selfControlledConversation,

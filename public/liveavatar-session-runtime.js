@@ -10,6 +10,7 @@ export function createTrackAttacher({
   remoteAudio,
   videoPlaceholder,
   onVideoTrackAttached = () => {},
+  onAudioTrackAttached = () => {},
   onAudioBlocked = () => {}
 } = {}) {
   return function attachTrack(track) {
@@ -23,6 +24,10 @@ export function createTrackAttacher({
 
     if (attachedKind === "video") {
       onVideoTrackAttached();
+    }
+
+    if (attachedKind === "audio") {
+      onAudioTrackAttached();
     }
   };
 }
