@@ -45,7 +45,8 @@ README を置き換えるものではありません。ここには、毎回守�
 ### 1. 標準経路を壊さない
 
 - まず守るべき主経路は `browser -> /api/liveavatar/* -> LiveKit -> /api/dialogue/respond/stream -> avatar.speak_text` です
-- custom LLM / RAG 用のコードは撤去済みです。標準経路は self-controlled 構成のみです
+- RAG 経路（`/api/rag/*` alias・`/v1/chat/completions`・custom LLM provisioning scripts）は撤去済みです。復活させない
+- 標準経路は `LIVEAVATAR_SELF_CONTROLLED=true` のみです。false にすると HeyGen 内蔵 LLM が台本外の医学的回答を自由に生成するため、本番では使わない
 - 変更時は self-controlled 構成が引き続き成立するかを優先して確認してください
 
 ### 2. README と実装をずらさない
@@ -65,13 +66,25 @@ README を置き換えるものではありません。ここには、毎回守�
 - LLMは intent分類・ASR補正・(任意の)言い換えにのみ使い、自由回答は生成させない
 - シナリオ外の応答を追加する場合は、逸脱ハンドリング(deviation-handler)の定型文として扱う
 
-### 4. フロントとサーバーの境界を崩しすぎない
+### 4. 本番向けの保護機構を外さない
+
+本番のトラブル（台本が飛ぶ・音声が出ない）を受けて入れた防御です。一見冗長に見えても消さないこと。
+
+- **非発話フィルタ**（`public/transcript-filter.js` / `src/features/scenario/utterance-filter.js`）: ASRの句読点だけ・一音だけの断片を除外。これを外すと `patient_any` ノードが素通しされて台本が飛ぶ
+- **エコーガード**（`public/transcript-echo-guard.js`）: スピーカー回り込みをアバター自身の発話と照合して無視
+- **発話ウォッチドッグ / 再送**（`liveavatar-self-controller.js`）: `speak_started/ended` の取りこぼしで無音停止しないための保険
+- **起動処理の世代管理**（`liveavatar-session-manager.js`）: Start 中の Stop 割り込みで sessionId が失われないようにしている
+- ブラウザ側とサーバー側で二重に防いでいる箇所は、**両方**残すこと（片方の実装を「重複」として消さない）
+
+判定ロジックを触る場合は、「はい」「うん」などの正規の短答が通ることをテストで担保してください。
+
+### 5. フロントとサーバーの境界を崩しすぎない
 
 - ブラウザ側の会話制御は `public/` にあります
 - LiveAvatar API 呼び出しやシナリオエンジン本体は `src/features/` にあります
 - 変更時は、責務がどちらにあるべきかを確認してから実装する
 
-### 5. 秘密情報を増やさない
+### 6. 秘密情報を増やさない
 
 - API キーや機微情報をコード、README、サンプル値に直書きしない
 - `.env.example` には共有してよい例だけを書く
@@ -87,6 +100,7 @@ README を置き換えるものではありません。ここには、毎回守�
 ## 完了前チェック
 
 - `npm test` が通るか、少なくとも変更箇所に関係するテストを実行したか
+- Markdown を編集したなら `npm run format` を実行したか（prettier がテーブル幅を整形するため、整形前の文字列を狙った差分は当たらないことがある）
 - 画面挙動を変えたなら `/xgate` を確認したか
 - API や SSE を変えたなら、ブラウザ側とサーバー側の両方を確認したか
 - 環境変数や運用を変えたなら `README.md` と `.env.example` を更新したか

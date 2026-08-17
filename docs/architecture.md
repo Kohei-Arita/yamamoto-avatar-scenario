@@ -7,13 +7,17 @@
 ```
 利用者(模擬患者)の音声
   → LiveAvatarが文字起こし
-  → ブラウザが発話断片を結合・エコー(スピーカー回り込み)を除外 (public/liveavatar-self-controller.js)
+  → ブラウザが発話断片を結合・非発話の断片(句読点のみ等)とエコー(スピーカー回り込み)を除外
+     (public/liveavatar-self-controller.js)
   → POST /api/dialogue/respond/stream (結合再送時は revision フラグ付き)
   → transcript-normalizer でASR補正
-  → scenario-engine: 現在ノードに対する患者発話を intent-matcher で分類
-       ├─ 想定内 → 次ノードの医師セリフを確定
-       ├─ 想定外だが軽微 → 受け止め一文 + 現在ノードの質問を再提示
-       └─ 台本外(予後断定要求・雑談など) → deviation-handler の定型文で台本へ復帰
+  → scenario-engine:
+       ├─ 非発話の断片 → kind="ignored"。進行も発話もしない(サーバー側の二重防御)
+       ├─ 現在ノードに対する患者発話を intent-matcher で分類
+       │    ├─ 想定内 → 次ノードの医師セリフを確定
+       │    ├─ 想定外だが軽微 → 受け止め一文 + 現在ノードの質問を再提示
+       │    └─ 台本外(予後断定要求・雑談など) → deviation-handler の定型文で台本へ復帰
+       └─ 判定中にoperator操作が入っていた → kind="superseded"。判定を破棄し発話しない
   → セリフ確定(既定: doctorLines固定文。SCENARIO_SPEECH_MODE=paraphrase でLLM言い換え+禁止語チェック)
   → streaming-speech で文単位に分割
   → SSE speech_segment
@@ -25,12 +29,15 @@
 ## ディレクトリ
 
 ```
-src/features/scenario/    状態機械(engine)・ローダー・スキーマ検証・intent分類・逸脱処理・進行状態store
-src/features/dialogue/    SSE入出力・発話整形(読み仮名/字幕/文分割)・会話履歴・進行ログ・OpenAIクライアント
+src/features/scenario/    状態機械(engine)・ローダー・スキーマ検証・intent分類・逸脱処理
+                          ・非発話フィルタ(utterance-filter)・進行状態store
+src/features/dialogue/    SSE入出力・発話整形(読み仮名/字幕/文分割)・会話履歴・進行ログ
+                          ・セッション登録簿(session-registry)・OpenAIクライアント
 src/features/operator/    オペレーターAPI (/api/operator/*, Bearer認証)
-src/features/liveavatar/  LiveAvatarセッション管理(旧版から変更なし)
+src/features/liveavatar/  LiveAvatarセッション管理
 data/scenarios/           シナリオ定義JSON (haigan-2026.json)
 public/operator.*         オペレーター画面
+public/transcript-*.js    非発話フィルタ・エコーガード(ブラウザ側の一次防御)
 ```
 
 ## シナリオ定義 (data/scenarios/haigan-2026.json)
@@ -84,13 +91,18 @@ LiveAvatarセッションの切断・再接続（新しいsessionId）では、b
 
 ## 本番向けの保護機構
 
+- **非発話フィルタ** (`public/transcript-filter.js` / `src/features/scenario/utterance-filter.js`): ASRが無音区間や発話の切れ目で出す「句読点だけ」「一音だけ」の断片を除外。これを通すと `patient_any` ノードが素通しされて台本が飛び、アバター発話中なら割り込みで音声が中断される。ブラウザ（送信前）とサーバー（`kind="ignored"`）の二段で防御し、「はい」「うん」等の短答は通す
 - **エコーガード** (`public/transcript-echo-guard.js`): アバター発話がスピーカー→マイクで回り込んで文字起こしされたものを、文字2-gram一致率で検知して無視
 - **revision巻き戻し**: 途切れた発話の結合再送時、サーバーが直前の患者遷移を取り消してから再判定（台本の二重前進を防止）
-- **発話ウォッチドッグ**: `speak_started`/`speak_ended` イベントの取りこぼし時も発話キューを強制前進（無音のまま停止しない）
+- **開始挨拶の確実化**: アバターの音声トラック到着（＝HeyGenエージェント入室）を待って挨拶を送信。入室前に送るとdata channelのコマンドが配送されず無音になる
+- **発話ウォッチドッグ**: `speak_started` が返らなければ一度だけ再送し、それでも無応答なら発話中とみなして前進。`speak_ended` 未着時も推定発話時間の経過でキューを前進（無音のまま停止しない）
+- **起動処理の世代管理**: Start処理中にStopが割り込んだ場合は起動を中断。sessionIdは起動時に確定した値を固定で使い、途中のStopでnull化しない
 - **superseded破棄**: LLM intent分類の待機中にオペレーター操作が入った場合、古い判定は破棄
-- **セッションID検証**: LiveAvatarセッションを発行済みのサーバーは、未知のsessionIdからの対話APIを403で拒否
+- **セッションID検証** (`src/features/dialogue/session-registry.js`): LiveAvatarセッションを発行済みのサーバーは、明示指定された未知のsessionIdからの対話APIを403で拒否（未指定は直近bindセッションへのフォールバックとして許可）
 - **自動再接続**: `/xgate?autostart=1` は予期しない切断から最大3回自動で再接続
 - **自動再生ブロック対応**: 音声がブラウザにブロックされた場合「タップして音声を有効にする」オーバーレイを表示
+
+いずれもサーバーログ（`utterance_ignored` / `echo_ignored` / `revision_rewind` / `utterance_superseded`）とブラウザログ（`watchdog.*`）で発動を確認できます。
 
 ## 画面
 

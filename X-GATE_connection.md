@@ -5,7 +5,7 @@
 
 ## まず前提
 
-あなたのアプリは今、Node / Express で `localhost:3000` に立ち上がり、既存の確認 UI `/` と、X-Gate 向けの出力ページ `/xgate` をブラウザで開いて使う構成です。
+あなたのアプリは今、Node / Express で `localhost:3000` に立ち上がり、X-Gate 向けの出力ページ `/xgate`、進行担当者用の `/operator`、開発者用のデバッグ画面 `/index.html` をブラウザで開いて使う構成です（`/` は `/xgate` にリダイレクトされます）。
 
 README でも `npm run dev` のあとに `http://localhost:3000` を開いて動作確認する流れになっていて、将来の拡張を見据えて LiveAvatar 連携をバックエンドに隔離しています。
 
@@ -26,11 +26,20 @@ README でも `npm run dev` のあとに `http://localhost:3000` を開いて動
 ### 確認用 UI
 
 ```text
-http://localhost:3000/
+http://localhost:3000/index.html
 ```
 
 これはデバッグや接続確認用です。
 ログや状態表示を見ながら、セッション開始や切り分けをするための画面です。
+
+### 進行オペレーター画面
+
+```text
+http://localhost:3000/operator
+```
+
+会場Votingの結果を反映する画面です。**本番ではこれを別ウィンドウ（できれば手元の別画面）で開いたままにします**。
+`.env` の `OPERATOR_TOKEN` を入力して接続してください。
 
 ### X-Gate 出力用 UI
 
@@ -96,14 +105,14 @@ Apple メニュー → システム設定 → ディスプレイ
 本番前に、必要なら既存の確認用 UI でも一度動作を見ます。
 
 ```text
-http://localhost:3000/
+http://localhost:3000/index.html
 ```
 
 この画面はログが出るので、接続に失敗したときの切り分けがしやすいです。
 
 おすすめの流れは次です。
 
-1. まず `/` で接続確認する
+1. まず `/index.html` で接続確認する
 2. 問題なければ `/xgate` に切り替える
 
 ## 6. X-Gate 側にブラウザを移動する
@@ -113,17 +122,21 @@ Mac で Chrome の `/xgate` タブを X-Gate 側の画面へドラッグしま�
 その後、X-Gate 側の画面でこの URL を開きます。
 
 ```text
-http://localhost:3000/xgate?controls=0&subtitles=1
+http://localhost:3000/xgate?autostart=1&controls=0&subtitles=1
 ```
 
 この構成意図はこうです。
 
+- `autostart=1`
+  - ページを開いた時点で自動的にセッションを開始する（Start を押さなくてよい）
+  - 予期しない切断からの自動再接続もこの指定のときだけ有効になる
 - `controls=0`
   - HUD を自動で消して、出力画面っぽくする
+  - あわせて `s`（セッション停止）キーを無効化し、誤操作で止まらないようにする
 - `subtitles=1`
   - 字幕を出す
 
-今のアプリは `/` を確認用 UI、`/xgate` を出力専用に分ける設計なので、この運用が自然です。
+今のアプリは `/index.html` を確認用 UI、`/xgate` を出力専用、`/operator` を進行操作用に分ける設計なので、この運用が自然です。
 
 ## 7. X-Gate 側でフルスクリーンにする
 
@@ -148,11 +161,16 @@ X-Gate 側に出したブラウザでフルスクリーンにします。
 
 あなたの操作は次です。
 
-1. X-Gate 画面で `http://localhost:3000/xgate?controls=0&subtitles=1` を開く
+1. X-Gate 画面で `http://localhost:3000/xgate?autostart=1&controls=0&subtitles=1` を開く
 2. フルスクリーンにする
-3. `Start` を押す
-4. マイク許可を確認する
-5. 一度話しかけて返答を確認する
+3. マイク許可を確認する（`autostart=1` なら Start は不要。押す場合は `Start`）
+4. 開始挨拶が**音声で**流れることを確認する
+5. 一度話しかけて、台本どおりに進むことを確認する
+
+`🔊 タップして音声を有効にする` が出たら、ブラウザの自動再生制限で音がブロックされています。
+画面をタップ（クリック）すれば解除されます。
+
+手元では `/operator` を開いておき、進行ノードが想定どおり動いているかを見ながら進めます。
 
 ここまで通れば、X-Gate 上での表示運用は成立です。
 
@@ -180,13 +198,14 @@ Docker は再現性には有利ですが、現場トラブル時の切り分け�
 
 ## 最短手順だけ抜き出すと
 
-1. `npm run dev` を起動したままにする
-2. Mac で `http://localhost:3000/xgate` が動くことを確認する
-3. X-Gate を HDMI で Mac につなぐ
-4. Mac のディスプレイ設定で外部画面として認識されていることを確認する
-5. X-Gate 側の画面で `http://localhost:3000/xgate?controls=0&subtitles=1` を開く
-6. フルスクリーンにする
-7. `Start` を押す
+1. `.env` に `LIVEAVATAR_API_KEY` / `OPENAI_API_KEY` / `OPERATOR_TOKEN` が入っていることを確認する
+2. `npm run dev` を起動したままにする
+3. Mac で `http://localhost:3000/xgate` が動くことを確認する
+4. X-Gate を HDMI で Mac につなぐ
+5. Mac のディスプレイ設定で外部画面として認識されていることを確認する
+6. X-Gate 側の画面で `http://localhost:3000/xgate?autostart=1&controls=0&subtitles=1` を開く
+7. フルスクリーンにする
+8. 手元で `http://localhost:3000/operator` を開き、`OPERATOR_TOKEN` で接続する
 
 ## 補足
 
@@ -194,7 +213,10 @@ Docker は再現性には有利ですが、現場トラブル時の切り分け�
 
 要するに、
 
-- 接続確認や切り分けは `/`
+- 接続確認や切り分けは `/index.html`
 - 実際に映すのは `/xgate`
+- 進行の操作は `/operator`
 
 この使い分けで進めれば大丈夫です。
+
+本番当日の通し確認は [docs/rehearsal.md](docs/rehearsal.md) のチェックリストを使ってください。
