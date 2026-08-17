@@ -197,6 +197,13 @@ export async function postStopSession(req, res) {
 
     return res.json({ ok: true, raw: data });
   } catch (error) {
+    // 開始前に停止された・すでに終了済みのセッションは正常系として扱う
+    // (start中にstopが割り込んだ場合などに発生する)
+    if (error.status === 404) {
+      console.log("[liveavatar] stop_session_already_gone", JSON.stringify({ status: 404 }));
+      return res.json({ ok: true, alreadyStopped: true });
+    }
+
     return sendError(res, "stop_session", error);
   }
 }

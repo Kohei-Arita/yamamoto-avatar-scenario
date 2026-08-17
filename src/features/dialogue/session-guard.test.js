@@ -45,6 +45,14 @@ test("セッション発行後は未知のsessionIdからの対話リクエス�
   });
   assert.equal(rejectedBind.status, 403);
 
+  // sessionId未指定は拒否しない(サーバー側で直近bindセッションへフォールバックする正常系)
+  const noSessionStream = await fetch(`${baseUrl}/api/dialogue/respond/stream`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ text: "こんにちは" })
+  });
+  assert.equal(noSessionStream.status, 200);
+
   const rejectedStream = await fetch(`${baseUrl}/api/dialogue/respond/stream`, {
     method: "POST",
     headers: { "content-type": "application/json" },

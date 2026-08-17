@@ -21,6 +21,12 @@ export function registerKnownSessionId(sessionId) {
 }
 
 export function isAllowedDialogueSession(sessionId) {
+  // sessionId未指定はサーバー側で直近のbind済みセッションへフォールバックされる
+  // 正常系のため拒否しない。拒否するのは「明示的に指定された未知のID」のみ。
+  if (!sessionId) {
+    return true;
+  }
+
   if (knownSessionIds.size === 0) {
     return true;
   }

@@ -51,6 +51,9 @@ export function createSessionManager({
   let selfControlledConversation = null;
   let dialogueEventSource = null;
   let startPromise = null;
+  // stop()のたびに増える世代番号。start処理は各await後にこれを確認し、
+  // 処理中にstopが割り込んでいたら安全に中断する(半端な起動状態を防ぐ)。
+  let lifecycleEpoch = 0;
 
   const sessionStartLock = createSessionStartLock();
   const sessionLockHeartbeat = createSessionLockHeartbeat(sessionStartLock);
@@ -148,6 +151,8 @@ export function createSessionManager({
   }
 
   async function stop() {
+    lifecycleEpoch += 1;
+
     try {
       await stopLiveAvatarSessionSafely(sessionToken, stopLiveAvatarSession, {
         onError: (error) => onLog(`Stop session warning: ${error.message}`)
@@ -172,30 +177,56 @@ export function createSessionManager({
       throw new Error("別のタブでセッションが進行中です。");
     }
 
+    const epoch = lifecycleEpoch;
+
+    // start処理中にstop()が割り込んだ場合、以降の処理を中断して二重状態を防ぐ。
+    // (以前はstopがcurrentSessionIdをnullに戻した後もstartが続行し、
+    //  sessionIdなしでbind/SSE購読され、以降の対話が403で拒否される事故があった)
+    function ensureNotStopped() {
+      if (lifecycleEpoch !== epoch) {
+        throw new Error("セッション開始中に停止されました。もう一度Startしてください。");
+      }
+    }
+
     startPromise = (async () => {
       onConnectionStateChange("starting");
 
       try {
         if (!config) {
           config = await fetchLiveAvatarConfig();
+          ensureNotStopped();
         }
 
         if (!skipMicrophonePreflight) {
           await ensureMicrophoneAccess({
             unsupportedMessage: "このブラウザではマイク取得 API が使えません。"
           });
+          ensureNotStopped();
         }
 
         const tokenResponse = await createLiveAvatarSessionToken();
+        // 先にトークンを保持してからstop割り込みを確認する
+        // (中断時にcatch側のstop()が、作成済みセッションを確実に破棄できるように)
         sessionToken = tokenResponse.session_token;
-        currentSessionId = tokenResponse.session_id || null;
+        const startSessionId = tokenResponse.session_id || null;
+        currentSessionId = startSessionId;
+        ensureNotStopped();
+
+        if (!startSessionId) {
+          throw new Error("LiveAvatarのセッションIDを取得できませんでした。");
+        }
 
         const session = await startLiveAvatarSession(sessionToken);
+        ensureNotStopped();
+
         await internalConnectRoom(session.livekit_url, session.livekit_token);
+        ensureNotStopped();
 
         selfControlledConversation = initializeSelfControlledConversation({
           getRoom: () => room,
-          getSessionId: () => currentSessionId,
+          // stop()でcurrentSessionIdがnullに戻っても影響を受けないよう、
+          // このstartで確定したsessionIdを固定値として使う。
+          getSessionId: () => startSessionId,
           liveAvatarConfig: config,
           respondWithDialogueStream,
           subtitleController,
@@ -205,8 +236,10 @@ export function createSessionManager({
         });
 
         sessionLockHeartbeat.start();
-        await bindDialogueSession(currentSessionId);
-        dialogueEventSource = subscribeDialogueEvents(currentSessionId, {
+        await bindDialogueSession(startSessionId);
+        ensureNotStopped();
+
+        dialogueEventSource = subscribeDialogueEvents(startSessionId, {
           onSpeechSegment: (segment) => {
             onLog(`operator.speech_segment: ${segment.speechText}`);
             selfControlledConversation?.speakText(segment).catch(onError);
@@ -217,6 +250,7 @@ export function createSessionManager({
           selfControlledConversation,
           onError
         });
+        ensureNotStopped();
 
         started = true;
       } catch (error) {
