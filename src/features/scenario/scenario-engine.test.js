@@ -165,6 +165,50 @@ test("終端ノードで患者が発話するとclosed応答を返す", async ()
   assert.equal(result.deviation, "closed");
 });
 
+test("句読点だけのASR断片ではpatient_anyノードが進まない(台本スキップ防止)", async () => {
+  const engine = createScenarioEngine({ scenario });
+  const sessionId = newSessionId();
+
+  // s1_greeting は patient_any。以前は「。」だけで次へ進んでしまっていた
+  const result = await engine.handlePatientUtterance(sessionId, "。");
+
+  assert.equal(result.kind, "ignored");
+  assert.deepEqual(result.lines, []);
+  assert.equal(engine.getSessionState(sessionId).nodeId, "s1_greeting");
+
+  // 実際の発話が来れば通常どおり進む
+  const advanced = await engine.handlePatientUtterance(sessionId, "よろしくお願いします");
+  assert.equal(advanced.nodeId, "s1_symptoms");
+});
+
+test("分岐問診の直後に句読点断片が来ても台本を飛ばさない", async () => {
+  const engine = createScenarioEngine({ scenario });
+  const sessionId = newSessionId();
+
+  await engine.handlePatientUtterance(sessionId, "こんにちは");
+  await engine.handlePatientUtterance(sessionId, "特にありません");
+  await engine.handlePatientUtterance(sessionId, "階段では少し息が切れます");
+  engine.applyOperatorBranch(sessionId, "voting1_A");
+
+  // 本番ログで発生した事象: 「。」だけの断片で v1_smoking → s1_close まで飛んだ
+  const result = await engine.handlePatientUtterance(sessionId, "。");
+  assert.equal(result.kind, "ignored");
+  assert.equal(engine.getSessionState(sessionId).nodeId, "v1_smoking");
+});
+
+test("相槌未満の一音は無視するが「はい」などの短答は進める", async () => {
+  const engine = createScenarioEngine({ scenario });
+  const sessionId = newSessionId();
+
+  const ignored = await engine.handlePatientUtterance(sessionId, "あー");
+  assert.equal(ignored.kind, "ignored");
+  assert.equal(engine.getSessionState(sessionId).nodeId, "s1_greeting");
+
+  const advanced = await engine.handlePatientUtterance(sessionId, "はい");
+  assert.equal(advanced.kind, "advance");
+  assert.equal(advanced.nodeId, "s1_symptoms");
+});
+
 test("言い直し(revision)は直前の患者遷移を巻き戻してから判定し、台本が二重に進まない", async () => {
   const engine = createScenarioEngine({ scenario });
   const sessionId = newSessionId();

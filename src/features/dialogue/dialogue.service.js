@@ -115,7 +115,9 @@ async function buildScenarioReply({ text, sessionId, revision = false } = {}, { 
     answerPreview: content.slice(0, 160)
   });
 
-  if (resolvedSessionId !== "unbound-session" && engineResult.kind !== "superseded") {
+  const isNoOpResult = engineResult.kind === "superseded" || engineResult.kind === "ignored";
+
+  if (resolvedSessionId !== "unbound-session" && !isNoOpResult) {
     appendConversationTurn(resolvedSessionId, [
       { role: "user", content: transcript.normalizedText },
       { role: "assistant", content }

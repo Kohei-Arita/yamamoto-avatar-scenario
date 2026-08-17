@@ -285,6 +285,32 @@ test("speak_started/endedが届かなくてもウォッチドッグでキュー�
   assert.ok(texts.includes("二文目です。"));
 });
 
+test("句読点だけのASR断片は送信せず、アバターの発話も中断しない", async () => {
+  const calls = [];
+  const { room, publishedEvents } = createRoomWithPublishedEvents();
+  const conversation = createSelfControlledConversation({
+    getRoom: () => room,
+    getSessionId: () => "session-non-lexical",
+    debounceMs: 20,
+    respondToTextStream: async ({ text }) => {
+      calls.push(text);
+      return { content: text };
+    }
+  });
+
+  await conversation.speakText("たばこは、1日にどのくらい吸われていますか。");
+  assert.equal(publishedEvents.length, 1);
+
+  conversation.handleAgentResponseEvent({ event_type: "user.transcription", text: "。" });
+  conversation.handleAgentResponseEvent({ event_type: "user.transcription", text: "あー" });
+
+  await wait(60);
+
+  // サーバーへ送らず、割り込み(avatar.interrupt)も発生しない
+  assert.deepEqual(calls, []);
+  assert.equal(publishedEvents.length, 1);
+});
+
 test("アバター発話のエコー(回り込み文字起こし)を患者発話として扱わない", async () => {
   const calls = [];
   const { room } = createRoomWithPublishedEvents();

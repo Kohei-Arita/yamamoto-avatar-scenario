@@ -8,6 +8,7 @@ import {
 } from "./scenario.store.js";
 import { matchIntent } from "./intent-matcher.js";
 import { buildDeviationLines, classifyDeviation } from "./deviation-handler.js";
+import { isSubstantiveUtterance } from "./utterance-filter.js";
 
 function getNode(scenario, nodeId) {
   return scenario.nodes.find((node) => node.id === nodeId) || null;
@@ -74,6 +75,24 @@ export function createScenarioEngine({ scenario = null } = {}) {
   async function handlePatientUtterance(sessionId, text, { revision = false, signal } = {}) {
     const currentScenario = resolveScenario();
     const session = getOrCreateScenarioSession(sessionId, currentScenario.entryNode);
+
+    // ASRが出す句読点だけ・一音だけの断片では進行させない(発話もしない)。
+    // patient_anyノードをこれで通すと台本が勝手に進んでしまう。
+    if (!isSubstantiveUtterance(text)) {
+      console.log(
+        "[scenario] utterance_ignored",
+        JSON.stringify({ sessionId: session.sessionId, nodeId: session.nodeId, text })
+      );
+
+      return {
+        kind: "ignored",
+        deviation: null,
+        nodeId: session.nodeId,
+        scene: getNode(currentScenario, session.nodeId)?.scene ?? null,
+        intent: null,
+        lines: []
+      };
+    }
 
     // 発話の言い直し(途切れた発話の結合再送)の場合、直前の患者遷移を取り消してから
     // 結合後の発話で判定し直す。これをしないと同じ発話で台本が二重に進んでしまう。

@@ -1,5 +1,6 @@
 import { isAvatarSubtitleEndEvent, normalizeSubtitleText } from "./liveavatar-subtitles.js";
 import { createEchoGuard } from "./transcript-echo-guard.js";
+import { isSubstantiveTranscript } from "./transcript-filter.js";
 
 const AGENT_CONTROL_TOPIC = "agent-control";
 const EVENT_META_NESTED_KEYS = ["data", "payload", "message", "detail", "result", "metadata"];
@@ -530,6 +531,13 @@ export function createSelfControlledConversation({
     const normalizedText = String(text || "").trim();
 
     if (!normalizedText) {
+      return;
+    }
+
+    // 句読点だけ・一音だけのASR断片は患者発話として扱わない。
+    // (通すと台本が進み、アバター発話中なら割り込みで発話が中断される)
+    if (!isSubstantiveTranscript(normalizedText)) {
+      onLog(`user.transcription.non_lexical_ignored: ${normalizedText}`);
       return;
     }
 
