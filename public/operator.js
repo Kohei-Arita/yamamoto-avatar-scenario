@@ -79,6 +79,14 @@ function renderBranches(state) {
   }
 }
 
+function escapeHtml(value) {
+  return String(value || "").replace(
+    /[&<>"']/g,
+    (char) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char] || char
+  );
+}
+
 function renderLogs(logs = []) {
   logList.innerHTML = "";
 
@@ -87,12 +95,14 @@ function renderLogs(logs = []) {
     entry.className = "operator-log-entry";
     const time = String(log.timestamp || "").slice(11, 19);
     const deviation = log.deviation
-      ? ` <span class="deviation">[逸脱:${log.deviation}]</span>`
+      ? ` <span class="deviation">[逸脱:${escapeHtml(log.deviation)}]</span>`
       : "";
-    const intent = log.intent ? ` intent=${log.intent}(${log.intentMethod || "?"})` : "";
-    const patient = log.userText ? `<div>患者: ${log.userText}</div>` : "";
+    const intent = log.intent
+      ? ` intent=${escapeHtml(log.intent)}(${escapeHtml(log.intentMethod || "?")})`
+      : "";
+    const patient = log.userText ? `<div>患者: ${escapeHtml(log.userText)}</div>` : "";
 
-    entry.innerHTML = `<div class="meta">${time} ${log.kind || ""} node=${log.nodeId || "-"}${intent}${deviation}</div>${patient}<div>山本: ${log.answerPreview || ""}</div>`;
+    entry.innerHTML = `<div class="meta">${time} ${escapeHtml(log.kind || "")} node=${escapeHtml(log.nodeId || "-")}${intent}${deviation}</div>${patient}<div>山本: ${escapeHtml(log.answerPreview || "")}</div>`;
     logList.appendChild(entry);
   }
 }

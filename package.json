@@ -14,10 +14,7 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier . --write",
-    "format:check": "prettier . --check",
-    "provision:liveavatar-llm": "node scripts/provision-liveavatar-custom-llm.mjs",
-    "inspect:liveavatar-llm": "node scripts/inspect-liveavatar-llm.mjs",
-    "update:liveavatar-llm": "node scripts/update-liveavatar-llm.mjs"
+    "format:check": "prettier . --check"
   },
   "dependencies": {
     "cors": "^2.8.5",

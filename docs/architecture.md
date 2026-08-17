@@ -7,8 +7,8 @@
 ```
 利用者(模擬患者)の音声
   → LiveAvatarが文字起こし
-  → ブラウザが発話断片を結合 (public/liveavatar-self-controller.js、変更なし)
-  → POST /api/dialogue/respond/stream
+  → ブラウザが発話断片を結合・エコー(スピーカー回り込み)を除外 (public/liveavatar-self-controller.js)
+  → POST /api/dialogue/respond/stream (結合再送時は revision フラグ付き)
   → transcript-normalizer でASR補正
   → scenario-engine: 現在ノードに対する患者発話を intent-matcher で分類
        ├─ 想定内 → 次ノードの医師セリフを確定
@@ -16,7 +16,7 @@
        └─ 台本外(予後断定要求・雑談など) → deviation-handler の定型文で台本へ復帰
   → セリフ確定(既定: doctorLines固定文。SCENARIO_SPEECH_MODE=paraphrase でLLM言い換え+禁止語チェック)
   → streaming-speech で文単位に分割
-  → SSE speech_segment (形式は旧RAG版と完全互換)
+  → SSE speech_segment
   → ブラウザ読み上げキュー → avatar.speak_text
 ```
 
@@ -61,25 +61,36 @@ public/operator.*         オペレーター画面
 
 ## API
 
-| パス                                | 内容                                                                        |
-| ----------------------------------- | --------------------------------------------------------------------------- |
-| `POST /api/dialogue/session`        | セッション作成（旧 `/api/rag/session` alias有）                             |
-| `POST /api/dialogue/respond/stream` | 患者発話→SSE応答（`speech_segment`/`done`/`error`、旧alias有）              |
-| `GET /api/dialogue/logs`            | 進行ログ（旧alias有）                                                       |
-| `GET /api/dialogue/events`          | オペレーター発話をブラウザへpushするSSEチャンネル                           |
-| `POST /v1/chat/completions`         | OpenAI互換endpoint（LiveAvatar custom LLM予備経路）                         |
-| `GET /api/operator/state`           | 現在ノード・分岐選択肢・履歴（要 `Authorization: Bearer <OPERATOR_TOKEN>`） |
-| `POST /api/operator/branch`         | Voting分岐確定 `{branch: "voting1_A"}` 等                                   |
-| `POST /api/operator/next`           | 強制送り（患者が固まった場合の救済）                                        |
-| `POST /api/operator/jump`           | 任意ノードへジャンプ `{nodeId}`（リハーサル・再起動復帰用）                 |
-| `POST /api/operator/reset`          | 先頭へ戻す                                                                  |
-| `POST /api/operator/say`            | セリフ再発話                                                                |
+| パス                                | 内容                                                                                                   |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `POST /api/dialogue/session`        | セッション作成（直前セッションの進行を自動引き継ぎ）                                                   |
+| `POST /api/dialogue/respond/stream` | 患者発話→SSE応答（`speech_segment`/`done`/`error`。`revision:true`で直前の患者遷移を巻き戻して再判定） |
+| `GET /api/dialogue/logs`            | 進行ログ                                                                                               |
+| `GET /api/dialogue/events`          | オペレーター発話をブラウザへpushするSSEチャンネル                                                      |
+| `GET /api/operator/state`           | 現在ノード・分岐選択肢・履歴（要 `Authorization: Bearer <OPERATOR_TOKEN>`）                            |
+| `POST /api/operator/branch`         | Voting分岐確定 `{branch: "voting1_A"}` 等                                                              |
+| `POST /api/operator/next`           | 強制送り（患者が固まった場合の救済）                                                                   |
+| `POST /api/operator/jump`           | 任意ノードへジャンプ `{nodeId}`（リハーサル・再起動復帰用）                                            |
+| `POST /api/operator/reset`          | 先頭へ戻す                                                                                             |
+| `POST /api/operator/say`            | セリフ再発話                                                                                           |
 
 オペレーター操作で確定したセリフは `/api/dialogue/events` のSSE経由でブラウザの既存読み上げキューに投入されます（ブラウザ側は `subscribeDialogueEvents` で購読）。
 
 ## 進行状態の保持
 
 会話履歴・進行状態はメモリのみです。**サーバー再起動で進行は先頭にリセットされます**。本番当日は単一インスタンスで運用してください（複数インスタンスでは状態が共有されません）。再起動時は `/operator` 画面の「ジャンプ」で中断地点へ復帰できます。
+
+LiveAvatarセッションの切断・再接続（新しいsessionId）では、bind時に直前セッションの進行・会話履歴を自動で引き継ぎます（直近10分以内・entryノード以外まで進んでいた場合のみ）。
+
+## 本番向けの保護機構
+
+- **エコーガード** (`public/transcript-echo-guard.js`): アバター発話がスピーカー→マイクで回り込んで文字起こしされたものを、文字2-gram一致率で検知して無視
+- **revision巻き戻し**: 途切れた発話の結合再送時、サーバーが直前の患者遷移を取り消してから再判定（台本の二重前進を防止）
+- **発話ウォッチドッグ**: `speak_started`/`speak_ended` イベントの取りこぼし時も発話キューを強制前進（無音のまま停止しない）
+- **superseded破棄**: LLM intent分類の待機中にオペレーター操作が入った場合、古い判定は破棄
+- **セッションID検証**: LiveAvatarセッションを発行済みのサーバーは、未知のsessionIdからの対話APIを403で拒否
+- **自動再接続**: `/xgate?autostart=1` は予期しない切断から最大3回自動で再接続
+- **自動再生ブロック対応**: 音声がブラウザにブロックされた場合「タップして音声を有効にする」オーバーレイを表示
 
 ## 画面
 

@@ -62,6 +62,7 @@ export function getPublicConfig() {
     selfControlled: env.liveAvatarSelfControlled,
     transcriptDebounceMs: env.liveAvatarTranscriptDebounceMs,
     transcriptContinuationMs: env.liveAvatarTranscriptContinuationMs,
+    allowInterrupt: env.liveAvatarAllowInterrupt,
     assistantName: env.liveAvatarAssistantName,
     assistantPersona: env.liveAvatarAssistantPersona,
     openingGreeting: resolveOpeningGreeting(),

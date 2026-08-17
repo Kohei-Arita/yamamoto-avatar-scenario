@@ -7,7 +7,6 @@ env.scenarioIntentLlm = false;
 env.dialogueLlmTranscriptNormalizationEnabled = false;
 env.scenarioSpeechMode = "fixed";
 env.operatorToken = "test-operator-token";
-env.dialogueEndpointApiKey = "";
 
 const { default: app } = await import("../../app.js");
 
@@ -54,7 +53,7 @@ async function postStream(sessionId, text) {
   return { response, events: parseSseEvents(rawText) };
 }
 
-test("SSEはspeech_segment→doneの順で、payload形式が旧RAG版と互換", async () => {
+test("SSEはspeech_segment→doneの順で応答する", async () => {
   const sessionId = "sse-compat-1";
 
   await fetch(`${baseUrl}/api/dialogue/session`, {
@@ -75,7 +74,7 @@ test("SSEはspeech_segment→doneの順で、payload形式が旧RAG版と互換"
   assert.equal(doneEvents.length, 1);
   assert.equal(events.at(-1).event, "done");
 
-  // 旧 rag.controller.js の toSpeechSegmentPayload と同一のフィールド構成
+  // speech_segment payload は text/speechText/subtitleText の3フィールド構成
   for (const { data } of segmentEvents) {
     assert.deepEqual(Object.keys(data).sort(), ["speechText", "subtitleText", "text"]);
     assert.equal(data.text, data.speechText);
@@ -87,19 +86,6 @@ test("SSEはspeech_segment→doneの順で、payload形式が旧RAG版と互換"
   assert.equal(done.ok, true);
 });
 
-test("旧パス /api/rag/respond/stream もaliasとして同じ形式で応答する", async () => {
-  const sessionId = "sse-compat-alias";
-  const response = await fetch(`${baseUrl}/api/rag/respond/stream`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ sessionId, text: "こんにちは" })
-  });
-  const events = parseSseEvents(await response.text());
-
-  assert.equal(events.at(-1).event, "done");
-  assert.equal(events.at(-1).data.ok, true);
-});
-
 test("textなしは400を返す", async () => {
   const response = await fetch(`${baseUrl}/api/dialogue/respond/stream`, {
     method: "POST",
@@ -107,23 +93,6 @@ test("textなしは400を返す", async () => {
     body: JSON.stringify({ sessionId: "x" })
   });
   assert.equal(response.status, 400);
-});
-
-test("/v1/chat/completions 互換endpointがOpenAI形式で応答する", async () => {
-  const response = await fetch(`${baseUrl}/v1/chat/completions`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      messages: [{ role: "user", content: "こんにちは" }],
-      metadata: { sessionId: "chat-compat-1" }
-    })
-  });
-  const data = await response.json();
-
-  assert.equal(response.status, 200);
-  assert.equal(data.object, "chat.completion");
-  assert.equal(data.choices[0].message.role, "assistant");
-  assert.ok(data.choices[0].message.content.length > 0);
 });
 
 test("operator APIは認証なしで401、正しいBearerで200", async () => {

@@ -57,7 +57,7 @@ export function createSelfControlledSession({
   getRoom,
   getSessionId,
   liveAvatarConfig,
-  respondWithRagStream,
+  respondWithDialogueStream,
   subtitleController,
   onLog = () => {},
   onAnswer = () => {},
@@ -72,9 +72,11 @@ export function createSelfControlledSession({
     getSessionId,
     debounceMs: liveAvatarConfig.transcriptDebounceMs || 1200,
     continuationWindowMs: liveAvatarConfig.transcriptContinuationMs || 1800,
-    respondToTextStream: ({ sessionId, text, signal, onSpeechSegment }) =>
-      respondWithRagStream(sessionId, text, {
+    allowInterrupt: liveAvatarConfig.allowInterrupt !== false,
+    respondToTextStream: ({ sessionId, text, revision, signal, onSpeechSegment }) =>
+      respondWithDialogueStream(sessionId, text, {
         signal,
+        revision,
         onEvent: async (event) => {
           if (event.type === "speech_segment" && (event.data?.speechText || event.data?.text)) {
             await onSpeechSegment({

@@ -4,6 +4,7 @@ import {
   startSession,
   stopSession
 } from "./liveavatar.service.js";
+import { registerKnownSessionId } from "../dialogue/session-registry.js";
 
 const RECENT_SESSION_TOKEN_TTL_MS = 10_000;
 const recentSessionTokens = new Map();
@@ -70,6 +71,8 @@ function rememberRecentSessionToken(req, data) {
 }
 
 function buildSessionTokenResponse(data) {
+  registerKnownSessionId(data?.session_id || null);
+
   return {
     ok: true,
     session_id: data.session_id || null,

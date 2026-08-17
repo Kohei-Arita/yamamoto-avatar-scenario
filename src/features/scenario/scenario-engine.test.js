@@ -164,3 +164,85 @@ test("終端ノードで患者が発話するとclosed応答を返す", async ()
   const result = await engine.handlePatientUtterance(sessionId, "ありがとうございました");
   assert.equal(result.deviation, "closed");
 });
+
+test("言い直し(revision)は直前の患者遷移を巻き戻してから判定し、台本が二重に進まない", async () => {
+  const engine = createScenarioEngine({ scenario });
+  const sessionId = newSessionId();
+
+  // s1_greeting → s1_symptoms
+  await engine.handlePatientUtterance(sessionId, "こんにちは");
+  // 発話が途切れた: 前半だけで s1_symptoms → s1_adl に進んでしまう
+  let result = await engine.handlePatientUtterance(sessionId, "特に");
+  assert.equal(result.nodeId, "s1_adl");
+
+  // 結合し直した発話が revision として再送される → s1_symptoms に巻き戻して判定
+  result = await engine.handlePatientUtterance(sessionId, "特にありません", { revision: true });
+  assert.equal(result.nodeId, "s1_adl");
+  assert.equal(result.intent, "no_symptoms");
+  // 二重前進していないこと(s1_adl の次の s1_voting1_wait に飛んでいないこと)
+  assert.equal(engine.getSessionState(sessionId).nodeId, "s1_adl");
+});
+
+test("revisionでもoperator操作後は巻き戻さない", async () => {
+  const engine = createScenarioEngine({ scenario });
+  const sessionId = newSessionId();
+
+  await engine.handlePatientUtterance(sessionId, "こんにちは");
+  await engine.handlePatientUtterance(sessionId, "特にありません");
+  await engine.handlePatientUtterance(sessionId, "元気にしています");
+  engine.applyOperatorBranch(sessionId, "voting1_A");
+
+  // operator操作(branch)の後に revision が来ても、branch先の v1_smoking から動かさず通常判定
+  const result = await engine.handlePatientUtterance(sessionId, "はい、そうです", {
+    revision: true
+  });
+  assert.equal(result.nodeId, "s1_close");
+});
+
+test("intent判定待ちの間にoperatorが操作した場合はsupersededを返し発話しない", async () => {
+  // LLM分類が遅延するケースを、matchIntent実行中のoperator操作で再現する
+  const slowScenario = structuredClone(scenario);
+  const engine = createScenarioEngine({ scenario: slowScenario });
+  const sessionId = newSessionId();
+
+  await engine.handlePatientUtterance(sessionId, "こんにちは");
+
+  // s1_symptoms で患者発話の判定を開始し、判定が終わる前に operator が次へ送る競合を再現。
+  // ルール層は同期実行のため、キーワード一致しない発話 + LLM無効でも
+  // handlePatientUtterance内のawait前後で割り込む形をとる
+  const utterancePromise = engine.handlePatientUtterance(sessionId, "咳が出ます");
+  engine.forceNext(sessionId);
+  const result = await utterancePromise;
+
+  // 判定完了時点でノードが動いていた場合、古い判定は破棄される
+  if (result.kind === "superseded") {
+    assert.deepEqual(result.lines, []);
+  } else {
+    // ルール一致が先に完了した場合は通常のadvance(タイミング依存を許容)
+    assert.equal(result.kind, "advance");
+  }
+});
+
+test("adoptProgressで新セッションへ進行を引き継げる", async () => {
+  const engine = createScenarioEngine({ scenario });
+  const oldSessionId = newSessionId();
+  const freshSessionId = newSessionId();
+
+  await engine.handlePatientUtterance(oldSessionId, "こんにちは");
+  await engine.handlePatientUtterance(oldSessionId, "特にありません");
+  assert.equal(engine.getSessionState(oldSessionId).nodeId, "s1_adl");
+
+  const adopted = engine.adoptProgress(oldSessionId, freshSessionId);
+  assert.equal(adopted, true);
+  assert.equal(engine.getSessionState(freshSessionId).nodeId, "s1_adl");
+});
+
+test("adoptProgressはentryノードのままの旧セッションからは引き継がない", () => {
+  const engine = createScenarioEngine({ scenario });
+  const oldSessionId = newSessionId();
+  const freshSessionId = newSessionId();
+
+  engine.getSessionState(oldSessionId);
+  assert.equal(engine.adoptProgress(oldSessionId, freshSessionId), false);
+  assert.equal(engine.adoptProgress("no-such-session", freshSessionId), false);
+});

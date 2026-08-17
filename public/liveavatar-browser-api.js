@@ -105,14 +105,18 @@ export async function fetchLiveAvatarConfig() {
   return data.config || null;
 }
 
-export async function respondWithRagStream(sessionId, text, { signal, onEvent = () => {} } = {}) {
+export async function respondWithDialogueStream(
+  sessionId,
+  text,
+  { signal, revision = false, onEvent = () => {} } = {}
+) {
   const response = await fetch("/api/dialogue/respond/stream", {
     method: "POST",
     signal,
     headers: {
       "content-type": "application/json"
     },
-    body: JSON.stringify({ sessionId, text })
+    body: JSON.stringify({ sessionId, text, revision })
   });
 
   if (!response.ok) {
@@ -183,7 +187,7 @@ export async function respondWithRagStream(sessionId, text, { signal, onEvent = 
   return finalResult;
 }
 
-export async function bindRagSession(sessionId) {
+export async function bindDialogueSession(sessionId) {
   if (!sessionId) {
     return null;
   }

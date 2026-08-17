@@ -45,7 +45,7 @@ README を置き換えるものではありません。ここには、毎回守�
 ### 1. 標準経路を壊さない
 
 - まず守るべき主経路は `browser -> /api/liveavatar/* -> LiveKit -> /api/dialogue/respond/stream -> avatar.speak_text` です
-- built-in 会話や custom LLM 用のコードは残っていますが、現在の標準構成ではありません
+- custom LLM / RAG 用のコードは撤去済みです。標準経路は self-controlled 構成のみです
 - 変更時は self-controlled 構成が引き続き成立するかを優先して確認してください
 
 ### 2. README と実装をずらさない
@@ -61,9 +61,9 @@ README を置き換えるものではありません。ここには、毎回守�
 
 ### 3. 医療デモとしての制約を意識する
 
-- 回答生成は `data/processed/lung-cancer-guideline-hybrid.jsonl` を根拠にする前提です
-- 検索やプロンプトを変える場合は、「なぜその断片が選ばれたか」を追いやすい性質を落とさない
-- 一般知識で自由に補完する方向より、取得断片ベースの説明を優先する
+- アバターが発話する内容は `data/scenarios/*.json` のノード定義から生成されたテキストのみです
+- LLMは intent分類・ASR補正・(任意の)言い換えにのみ使い、自由回答は生成させない
+- シナリオ外の応答を追加する場合は、逸脱ハンドリング(deviation-handler)の定型文として扱う
 
 ### 4. フロントとサーバーの境界を崩しすぎない
 

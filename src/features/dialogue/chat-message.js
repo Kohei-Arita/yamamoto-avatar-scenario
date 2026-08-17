@@ -22,28 +22,3 @@ export function getMessageText(content) {
 
   return "";
 }
-
-export function getLastUserMessage(messages = []) {
-  const lastUserMessage = [...messages].reverse().find((message) => message?.role === "user");
-  return getMessageText(lastUserMessage?.content);
-}
-
-export function replaceLastUserMessage(messages = [], content) {
-  const lastUserIndex = [...messages]
-    .map((message, index) => ({ message, index }))
-    .reverse()
-    .find((entry) => entry.message?.role === "user")?.index;
-
-  if (lastUserIndex === undefined) {
-    return messages;
-  }
-
-  return messages.map((message, index) =>
-    index === lastUserIndex
-      ? {
-          ...message,
-          content
-        }
-      : message
-  );
-}

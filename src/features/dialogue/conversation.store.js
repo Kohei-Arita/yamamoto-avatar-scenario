@@ -90,6 +90,20 @@ export function getConversationMessages(sessionId) {
   }));
 }
 
+// セッション再接続時に、旧セッションの会話履歴を新セッションへ引き継ぐ。
+export function adoptConversationSession(fromSessionId, toSessionId) {
+  const source = sessions.get(fromSessionId || "unbound-session");
+
+  if (!source || source.messages.length === 0 || fromSessionId === toSessionId) {
+    return false;
+  }
+
+  const target = getOrCreateSession(toSessionId);
+  target.messages = trimMessages([...source.messages]);
+  target.updatedAt = nowIso();
+  return true;
+}
+
 export function appendConversationTurn(sessionId, messages = []) {
   const session = getOrCreateSession(sessionId);
   const normalizedMessages = messages.map((message) => normalizeMessage(message)).filter(Boolean);

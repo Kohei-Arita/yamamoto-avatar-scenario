@@ -1,4 +1,5 @@
 import { isAvatarSubtitleEndEvent, normalizeSubtitleText } from "./liveavatar-subtitles.js";
+import { createEchoGuard } from "./transcript-echo-guard.js";
 
 const AGENT_CONTROL_TOPIC = "agent-control";
 const EVENT_META_NESTED_KEYS = ["data", "payload", "message", "detail", "result", "metadata"];
@@ -114,6 +115,14 @@ export function createSelfControlledConversation({
   continuationWindowMs = 1800,
   flushPollMs = 250,
   interruptGraceMs = 250,
+  allowInterrupt = true,
+  // speak_started / speak_ended イベントの取りこぼしで発話キューが
+  // 永久停止しないための保険(ウォッチドッグ)のタイムアウト設定。
+  speakStartTimeoutMs = 6000,
+  speakEndTimeoutBaseMs = 5000,
+  speakEndTimeoutPerCharMs = 350,
+  speakEndTimeoutMaxMs = 45000,
+  echoGuard = createEchoGuard(),
   onLog = () => {},
   onAnswer = () => {},
   onSpeechStart = () => {},
@@ -122,6 +131,7 @@ export function createSelfControlledConversation({
   onError = () => {}
 }) {
   let bufferedTranscripts = [];
+  let bufferIsRevision = false;
   let flushTimer = null;
   let generationId = 0;
   let isGenerating = false;
@@ -135,11 +145,72 @@ export function createSelfControlledConversation({
   let lastFinalizedAt = 0;
   let dispatchResumeTimer = null;
   let interruptBarrierUntil = 0;
+  let speakStartWatchdogTimer = null;
+  let speakEndWatchdogTimer = null;
 
   function clearBuffer() {
     bufferedTranscripts = [];
+    bufferIsRevision = false;
     clearTimeout(flushTimer);
     flushTimer = null;
+  }
+
+  function clearSpeechWatchdogs() {
+    clearTimeout(speakStartWatchdogTimer);
+    speakStartWatchdogTimer = null;
+    clearTimeout(speakEndWatchdogTimer);
+    speakEndWatchdogTimer = null;
+  }
+
+  function estimateSpeechDurationMs(text) {
+    const length = String(text || "").length;
+    return Math.min(
+      speakEndTimeoutBaseMs + length * speakEndTimeoutPerCharMs,
+      speakEndTimeoutMaxMs
+    );
+  }
+
+  // speak_ended が届かない場合に、推定発話時間の経過後にキューを強制前進させる。
+  function startSpeakEndWatchdog(segment) {
+    clearTimeout(speakEndWatchdogTimer);
+    speakEndWatchdogTimer = setTimeout(() => {
+      speakEndWatchdogTimer = null;
+
+      if (activeSpeechSegment !== segment) {
+        return;
+      }
+
+      onLog(`watchdog.speak_end_timeout: ${segment.speechText}`);
+      activeSpeechSegment = null;
+      isSpeaking = false;
+
+      if (speechQueue.length === 0 && !pendingSpeechSegment) {
+        onSpeechIdle();
+      }
+
+      dispatchNextSpeech().catch((error) => {
+        onError(error);
+      });
+    }, estimateSpeechDurationMs(segment.speechText));
+  }
+
+  // speak_started が届かない場合に、発話中とみなしてキューを止めない。
+  function startSpeakStartWatchdog(segment) {
+    clearTimeout(speakStartWatchdogTimer);
+    speakStartWatchdogTimer = setTimeout(() => {
+      speakStartWatchdogTimer = null;
+
+      if (pendingSpeechSegment !== segment) {
+        return;
+      }
+
+      onLog(`watchdog.speak_start_timeout: ${segment.speechText}`);
+      pendingSpeechSegment = null;
+      activeSpeechSegment = segment;
+      isSpeaking = true;
+      onSpeechStart(segment.subtitleText || segment.speechText || "");
+      startSpeakEndWatchdog(segment);
+    }, speakStartTimeoutMs);
   }
 
   function clearSpeechQueue() {
@@ -148,6 +219,7 @@ export function createSelfControlledConversation({
 
   function clearSpeechState() {
     clearSpeechQueue();
+    clearSpeechWatchdogs();
     activeSpeechSegment = null;
     pendingSpeechSegment = null;
     isSpeaking = false;
@@ -296,6 +368,12 @@ export function createSelfControlledConversation({
       });
       pendingSpeechSegment = nextSpeech;
 
+      // エコー(スピーカー回り込み)判定用に、発話テキストを記憶する。
+      echoGuard.rememberAvatarSpeech(nextSpeech.speechText);
+      echoGuard.rememberAvatarSpeech(nextSpeech.subtitleText);
+
+      startSpeakStartWatchdog(nextSpeech);
+
       onLog(`avatar.speak_text: ${nextSpeech.speechText}`);
       onLog(
         `avatar.speak_text.meta: ${JSON.stringify({
@@ -305,8 +383,10 @@ export function createSelfControlledConversation({
         })}`
       );
     } catch (error) {
+      // publish失敗時はキューに戻し、少し待って再送を試みる(1回の失敗で無音のまま止めない)。
       speechQueue.unshift(nextSpeech);
       pendingSpeechSegment = null;
+      scheduleDispatchRetry(1000);
       throw error;
     } finally {
       isDispatchingSpeech = false;
@@ -351,6 +431,7 @@ export function createSelfControlledConversation({
 
   async function flushBufferedTranscripts() {
     const combinedText = normalizeTranscript(bufferedTranscripts);
+    const isRevision = bufferIsRevision;
 
     clearBuffer();
 
@@ -363,12 +444,13 @@ export function createSelfControlledConversation({
     isGenerating = true;
     streamAbortController = new AbortController();
     rememberFinalizedTranscript(combinedText);
-    onLog(`user.transcription.final: ${combinedText}`);
+    onLog(`user.transcription.final: ${combinedText}${isRevision ? " (revision)" : ""}`);
 
     try {
       const result = await respondToTextStream({
         sessionId: getSessionId(),
         text: combinedText,
+        revision: isRevision,
         signal: streamAbortController.signal,
         onSpeechSegment: async (segment) => {
           if (currentGenerationId !== generationId) {
@@ -438,6 +520,19 @@ export function createSelfControlledConversation({
       return;
     }
 
+    // アバター自身の発話がスピーカー→マイクで回り込んだエコーは患者発話として扱わない。
+    // (エコーを通すと、発話が中断された上に台本が勝手に進んでしまう)
+    if (echoGuard.isLikelyEcho(normalizedText)) {
+      onLog(`user.transcription.echo_ignored: ${normalizedText}`);
+      return;
+    }
+
+    // 割り込み無効設定時は、アバター発話中の患者音声を完全に無視する。
+    if (!allowInterrupt && hasActiveResponse()) {
+      onLog(`user.transcription.ignored_while_speaking: ${normalizedText}`);
+      return;
+    }
+
     const appendToRecentTranscript = shouldAppendToRecentTranscript();
 
     if (hasActiveResponse()) {
@@ -446,6 +541,9 @@ export function createSelfControlledConversation({
 
     if (appendToRecentTranscript && bufferedTranscripts.length === 0) {
       bufferedTranscripts.push(lastFinalizedTranscript);
+      // 直前に送信済みの発話を作り直して再送するため、サーバー側に
+      // 「前回の患者遷移を巻き戻してから判定し直す」ことを伝える。
+      bufferIsRevision = true;
       onLog(`user.transcription.resume: ${lastFinalizedTranscript}`);
     }
 
@@ -491,6 +589,9 @@ export function createSelfControlledConversation({
       pendingSpeechSegment = null;
       activeSpeechSegment = speechSegment;
       isSpeaking = true;
+      clearTimeout(speakStartWatchdogTimer);
+      speakStartWatchdogTimer = null;
+      startSpeakEndWatchdog(speechSegment);
       onSpeechStart(speechSegment?.subtitleText || speechSegment?.speechText || "");
       return;
     }
@@ -515,6 +616,8 @@ export function createSelfControlledConversation({
 
       activeSpeechSegment = null;
       isSpeaking = false;
+      clearTimeout(speakEndWatchdogTimer);
+      speakEndWatchdogTimer = null;
 
       if (speechQueue.length === 0 && !pendingSpeechSegment) {
         onSpeechIdle();
@@ -530,6 +633,7 @@ export function createSelfControlledConversation({
     cancelCurrentResponse();
     clearBuffer();
     clearRecentFinalizedTranscript();
+    echoGuard.reset();
   }
 
   return {

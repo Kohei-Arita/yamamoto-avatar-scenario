@@ -9,14 +9,16 @@ export function createTrackAttacher({
   remoteVideo,
   remoteAudio,
   videoPlaceholder,
-  onVideoTrackAttached = () => {}
+  onVideoTrackAttached = () => {},
+  onAudioBlocked = () => {}
 } = {}) {
   return function attachTrack(track) {
     const attachedKind = attachTrackToMediaElements(track, {
       Track,
       remoteVideo,
       remoteAudio,
-      videoPlaceholder
+      videoPlaceholder,
+      onAudioBlocked
     });
 
     if (attachedKind === "video") {
@@ -29,7 +31,7 @@ export function initializeSelfControlledConversation({
   getRoom,
   getSessionId,
   liveAvatarConfig,
-  respondWithRagStream,
+  respondWithDialogueStream,
   subtitleController,
   onLog = () => {},
   onAnswer = () => {},
@@ -39,7 +41,7 @@ export function initializeSelfControlledConversation({
     getRoom,
     getSessionId,
     liveAvatarConfig,
-    respondWithRagStream,
+    respondWithDialogueStream,
     subtitleController,
     onLog,
     onAnswer,

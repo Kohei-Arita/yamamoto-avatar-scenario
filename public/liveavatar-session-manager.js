@@ -1,10 +1,10 @@
 import {
-  bindRagSession,
+  bindDialogueSession,
   connectLiveKitRoom,
   createLiveAvatarSessionToken,
   ensureMicrophoneAccess,
   fetchLiveAvatarConfig,
-  respondWithRagStream,
+  respondWithDialogueStream,
   subscribeDialogueEvents,
   startLiveAvatarSession,
   stopLiveAvatarSession
@@ -34,7 +34,8 @@ export function createSessionManager({
   onLog = () => {},
   onConnectionStateChange = () => {},
   onMicStateChange = () => {},
-  onRagAnswer = () => {},
+  onAnswer = () => {},
+  onAudioBlocked = () => {},
   onError = () => {},
   onDisconnected = () => {}
 }) {
@@ -70,7 +71,8 @@ export function createSessionManager({
     remoteVideo,
     remoteAudio,
     videoPlaceholder,
-    onVideoTrackAttached: updateChromaKey
+    onVideoTrackAttached: updateChromaKey,
+    onAudioBlocked
   });
 
   const handleDataReceived = createLiveAvatarDataHandler({
@@ -195,15 +197,15 @@ export function createSessionManager({
           getRoom: () => room,
           getSessionId: () => currentSessionId,
           liveAvatarConfig: config,
-          respondWithRagStream,
+          respondWithDialogueStream,
           subtitleController,
           onLog,
-          onAnswer: onRagAnswer,
+          onAnswer,
           onError
         });
 
         sessionLockHeartbeat.start();
-        await bindRagSession(currentSessionId);
+        await bindDialogueSession(currentSessionId);
         dialogueEventSource = subscribeDialogueEvents(currentSessionId, {
           onSpeechSegment: (segment) => {
             onLog(`operator.speech_segment: ${segment.speechText}`);

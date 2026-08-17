@@ -1,15 +1,7 @@
-import crypto from "node:crypto";
-import env from "../../config/env.js";
-import { createOpenAiCompatibleResponse } from "./adapters/openai-chat-response.js";
-import { getLastUserMessage } from "./chat-message.js";
-import { bindDebugSession, getDialogueLogs } from "./dialogue-log.store.js";
+import { getDialogueLogs } from "./dialogue-log.store.js";
 import { subscribeDialogueEvents } from "./dialogue-events.js";
-import {
-  answerUserText,
-  bindDialogueSession,
-  handleChatCompletion,
-  streamChatCompletion
-} from "./dialogue.service.js";
+import { isAllowedDialogueSession } from "./session-registry.js";
+import { answerUserText, bindDialogueSession, streamScenarioReply } from "./dialogue.service.js";
 
 function writeSseEvent(res, event, payload) {
   res.write(`event: ${event}\n`);
@@ -40,13 +32,21 @@ function setSseHeaders(res) {
   res.flushHeaders?.();
 }
 
-function isAuthorized(req) {
-  if (!env.dialogueEndpointApiKey) {
-    return true;
+// LiveAvatarセッションを発行済みのサーバーでは、未知のsessionIdからの
+// 対話リクエストを拒否する(公開URLへの野良リクエスト対策)。
+function rejectUnknownSession(req, res) {
+  const sessionId = req.body?.sessionId || null;
+
+  if (isAllowedDialogueSession(sessionId)) {
+    return false;
   }
 
-  const authHeader = req.headers.authorization || "";
-  return authHeader === `Bearer ${env.dialogueEndpointApiKey}`;
+  console.warn(
+    "[dialogue] unknown_session_rejected",
+    JSON.stringify({ sessionId, path: req.path })
+  );
+  res.status(403).json({ ok: false, error: "Unknown session" });
+  return true;
 }
 
 export function postBindDialogueSession(req, res) {
@@ -56,7 +56,10 @@ export function postBindDialogueSession(req, res) {
     return res.status(400).json({ ok: false, error: "sessionId is required" });
   }
 
-  bindDebugSession(sessionId, { source: "browser_debug_ui" });
+  if (rejectUnknownSession(req, res)) {
+    return undefined;
+  }
+
   const session = bindDialogueSession(sessionId);
   console.log("[dialogue] bind_session", JSON.stringify({ sessionId }));
 
@@ -85,6 +88,10 @@ export async function postRespondWithDialogue(req, res) {
 
   if (!text || typeof text !== "string") {
     return res.status(400).json({ ok: false, error: "text is required" });
+  }
+
+  if (rejectUnknownSession(req, res)) {
+    return undefined;
   }
 
   try {
@@ -121,10 +128,14 @@ export async function postRespondWithDialogue(req, res) {
 }
 
 export async function postRespondWithDialogueStream(req, res) {
-  const { sessionId, text } = req.body || {};
+  const { sessionId, text, revision } = req.body || {};
 
   if (!text || typeof text !== "string") {
     return res.status(400).json({ ok: false, error: "text is required" });
+  }
+
+  if (rejectUnknownSession(req, res)) {
+    return undefined;
   }
 
   const abortController = new AbortController();
@@ -142,14 +153,16 @@ export async function postRespondWithDialogueStream(req, res) {
       "[dialogue] respond_stream_request",
       JSON.stringify({
         sessionId: sessionId || null,
+        revision: Boolean(revision),
         userTextPreview: text.slice(0, 120)
       })
     );
 
-    const result = await streamChatCompletion(
+    const result = await streamScenarioReply(
       {
-        messages: [{ role: "user", content: text }],
-        metadata: sessionId ? { sessionId } : {}
+        text,
+        sessionId: sessionId || null,
+        revision: Boolean(revision)
       },
       {
         signal: abortController.signal,
@@ -202,73 +215,5 @@ export async function postRespondWithDialogueStream(req, res) {
     });
     res.end();
     return undefined;
-  }
-}
-
-export async function postChatCompletions(req, res) {
-  if (!isAuthorized(req)) {
-    console.warn(
-      "[dialogue] chat_completion_unauthorized",
-      JSON.stringify({
-        authPresent: Boolean(req.headers.authorization),
-        sessionId: req.body?.metadata?.sessionId || null
-      })
-    );
-
-    return res.status(401).json({
-      error: {
-        message: "Unauthorized",
-        type: "invalid_request_error"
-      }
-    });
-  }
-
-  try {
-    const messages = Array.isArray(req.body?.messages) ? req.body.messages : [];
-    const userText = getLastUserMessage(messages);
-
-    console.log(
-      "[dialogue] chat_completion_request",
-      JSON.stringify({
-        sessionId: req.body?.metadata?.sessionId || null,
-        messageCount: messages.length,
-        userTextPreview: userText.slice(0, 120)
-      })
-    );
-
-    const result = await handleChatCompletion(req.body);
-
-    return res.json(
-      createOpenAiCompatibleResponse({
-        model: env.openAiModel,
-        content: result.content
-      })
-    );
-  } catch (error) {
-    console.error(
-      "[dialogue] chat_completion_error",
-      JSON.stringify({
-        sessionId: req.body?.metadata?.sessionId || null,
-        message: error.message,
-        details: error.details || null
-      })
-    );
-
-    return res.status(500).json({
-      id: `chatcmpl-${crypto.randomUUID()}`,
-      object: "chat.completion",
-      created: Math.floor(Date.now() / 1000),
-      model: env.openAiModel,
-      choices: [
-        {
-          index: 0,
-          message: {
-            role: "assistant",
-            content: "内部エラーが発生しました。もう一度お願いします。"
-          },
-          finish_reason: "stop"
-        }
-      ]
-    });
   }
 }

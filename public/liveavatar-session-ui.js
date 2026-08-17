@@ -216,7 +216,7 @@ export function createChromaKeyController({
 
 export function attachTrackToMediaElements(
   track,
-  { Track, remoteVideo, remoteAudio, videoPlaceholder } = {}
+  { Track, remoteVideo, remoteAudio, videoPlaceholder, onAudioBlocked = () => {} } = {}
 ) {
   if (track.kind === Track.Kind.Video) {
     track.attach(remoteVideo);
@@ -227,6 +227,12 @@ export function attachTrackToMediaElements(
 
   if (track.kind === Track.Kind.Audio) {
     track.attach(remoteAudio);
+
+    // autostart時などユーザー操作なしで開始した場合、ブラウザの自動再生制限で
+    // 音声がブロックされることがある。検知して呼び出し元に通知する(タップで解除)。
+    remoteAudio.play()?.catch?.((error) => {
+      onAudioBlocked(error);
+    });
     return "audio";
   }
 

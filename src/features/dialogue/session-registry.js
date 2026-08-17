@@ -1,0 +1,29 @@
+// このサーバーが発行したLiveAvatarセッションIDの登録簿。
+// 対話API(bind/respond)は、登録済みセッションIDのみ受け付けることで、
+// 公開URLへの野良リクエストで台本が進行してしまう事故を防ぐ。
+// 一度もセッションを発行していない状態(ローカル開発・テスト)では制限しない。
+
+const MAX_KNOWN_SESSIONS = 50;
+
+const knownSessionIds = new Set();
+
+export function registerKnownSessionId(sessionId) {
+  if (!sessionId) {
+    return;
+  }
+
+  knownSessionIds.add(sessionId);
+
+  while (knownSessionIds.size > MAX_KNOWN_SESSIONS) {
+    const oldest = knownSessionIds.values().next().value;
+    knownSessionIds.delete(oldest);
+  }
+}
+
+export function isAllowedDialogueSession(sessionId) {
+  if (knownSessionIds.size === 0) {
+    return true;
+  }
+
+  return knownSessionIds.has(sessionId);
+}

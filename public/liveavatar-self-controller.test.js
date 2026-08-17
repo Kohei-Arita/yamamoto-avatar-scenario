@@ -104,7 +104,7 @@ test("rebuilds the utterance when a short continuation arrives after finalizatio
 
   assert.deepEqual(calls, ["を疑う病変に", "を疑う病変に知りたい。"]);
   assert.equal(logs.includes("user.transcription.resume: を疑う病変に"), true);
-  assert.equal(logs.includes("user.transcription.final: を疑う病変に知りたい。"), true);
+  assert.equal(logs.includes("user.transcription.final: を疑う病変に知りたい。 (revision)"), true);
 });
 
 test("does not merge a new utterance when the previous final already ended with punctuation", async () => {
@@ -218,6 +218,141 @@ test("matches avatar lifecycle events by echoed client ids before advancing the 
   assert.equal(publishedEvents.length, 2);
   assert.equal(publishedEvents[1].event_type, "avatar.speak_text");
   assert.equal(publishedEvents[1].text, "次の文です。");
+});
+
+test("speak_started/endedが届かなくてもウォッチドッグでキューが前進する", async () => {
+  const { room, publishedEvents } = createRoomWithPublishedEvents();
+  const conversation = createSelfControlledConversation({
+    getRoom: () => room,
+    getSessionId: () => "session-watchdog",
+    respondToTextStream: async () => ({ content: "" }),
+    speakStartTimeoutMs: 30,
+    speakEndTimeoutBaseMs: 30,
+    speakEndTimeoutPerCharMs: 0
+  });
+
+  await conversation.speakText("一文目です。");
+  await conversation.speakText("二文目です。");
+
+  assert.equal(publishedEvents.length, 1);
+
+  // アバターからのライフサイクルイベントが一切届かなくても、
+  // start/endウォッチドッグの経過後に次のセグメントが送出される
+  await wait(120);
+
+  assert.equal(publishedEvents.length, 2);
+  assert.equal(publishedEvents[1].text, "二文目です。");
+});
+
+test("アバター発話のエコー(回り込み文字起こし)を患者発話として扱わない", async () => {
+  const calls = [];
+  const { room } = createRoomWithPublishedEvents();
+  const conversation = createSelfControlledConversation({
+    getRoom: () => room,
+    getSessionId: () => "session-echo",
+    debounceMs: 20,
+    respondToTextStream: async ({ text }) => {
+      calls.push(text);
+      return { content: text };
+    }
+  });
+
+  await conversation.speakText("画像では、右下葉に約40mmの不整形な結節を認めます。");
+
+  // アバターの発話がスピーカー→マイク経由で文字起こしされて返ってきた
+  conversation.handleAgentResponseEvent({
+    event_type: "user.transcription",
+    text: "画像では右下葉に約40mmの不整形な結節を認めます"
+  });
+
+  await wait(60);
+  assert.deepEqual(calls, []);
+
+  // 本物の患者発話は通る
+  conversation.handleAgentResponseEvent({
+    event_type: "user.transcription",
+    text: "特にありません"
+  });
+
+  await wait(60);
+  assert.deepEqual(calls, ["特にありません"]);
+});
+
+test("継続発話の結合再送にはrevisionフラグが付く", async () => {
+  const requests = [];
+  const conversation = createSelfControlledConversation({
+    getRoom: () => null,
+    getSessionId: () => "session-revision",
+    debounceMs: 20,
+    continuationWindowMs: 120,
+    respondToTextStream: async ({ text, revision, signal }) => {
+      requests.push({ text, revision });
+
+      if (requests.length > 1) {
+        return { content: text };
+      }
+
+      return new Promise((resolve, reject) => {
+        signal.addEventListener(
+          "abort",
+          () => {
+            const error = new Error("aborted");
+            error.name = "AbortError";
+            reject(error);
+          },
+          { once: true }
+        );
+      });
+    }
+  });
+
+  conversation.handleAgentResponseEvent({
+    event_type: "user.transcription",
+    text: "坂道で少し"
+  });
+
+  await wait(40);
+
+  conversation.handleAgentResponseEvent({
+    event_type: "user.transcription",
+    text: "息切れがします。"
+  });
+
+  await wait(50);
+
+  assert.deepEqual(requests, [
+    { text: "坂道で少し", revision: false },
+    { text: "坂道で少し息切れがします。", revision: true }
+  ]);
+});
+
+test("allowInterrupt=falseではアバター発話中の音声を無視する", async () => {
+  const calls = [];
+  const { room, publishedEvents } = createRoomWithPublishedEvents();
+  const conversation = createSelfControlledConversation({
+    getRoom: () => room,
+    getSessionId: () => "session-no-interrupt",
+    debounceMs: 20,
+    allowInterrupt: false,
+    respondToTextStream: async ({ text }) => {
+      calls.push(text);
+      return { content: text };
+    }
+  });
+
+  await conversation.speakText("説明の途中です。");
+  assert.equal(publishedEvents.length, 1);
+
+  conversation.handleAgentResponseEvent({
+    event_type: "user.transcription",
+    text: "あの、質問があります"
+  });
+
+  await wait(50);
+
+  // 発話中の音声は無視され、割り込み(interrupt)も発生しない
+  assert.deepEqual(calls, []);
+  assert.equal(publishedEvents.length, 1);
 });
 
 test("holds new speech until the interrupt grace window passes and clears stale subtitles", async () => {

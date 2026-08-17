@@ -1,8 +1,10 @@
 import { getScenario } from "./scenario-loader.js";
 import {
+  adoptScenarioSession,
   getOrCreateScenarioSession,
   moveScenarioSession,
-  resetScenarioSession
+  resetScenarioSession,
+  rewindLastPatientMove
 } from "./scenario.store.js";
 import { matchIntent } from "./intent-matcher.js";
 import { buildDeviationLines, classifyDeviation } from "./deviation-handler.js";
@@ -69,9 +71,23 @@ export function createScenarioEngine({ scenario = null } = {}) {
     };
   }
 
-  async function handlePatientUtterance(sessionId, text, { signal } = {}) {
+  async function handlePatientUtterance(sessionId, text, { revision = false, signal } = {}) {
     const currentScenario = resolveScenario();
     const session = getOrCreateScenarioSession(sessionId, currentScenario.entryNode);
+
+    // 発話の言い直し(途切れた発話の結合再送)の場合、直前の患者遷移を取り消してから
+    // 結合後の発話で判定し直す。これをしないと同じ発話で台本が二重に進んでしまう。
+    if (revision) {
+      const rewound = rewindLastPatientMove(session);
+
+      if (rewound) {
+        console.log(
+          "[scenario] revision_rewind",
+          JSON.stringify({ sessionId: session.sessionId, nodeId: session.nodeId })
+        );
+      }
+    }
+
     const node = getNode(currentScenario, session.nodeId);
 
     if (!node) {
@@ -113,6 +129,28 @@ export function createScenarioEngine({ scenario = null } = {}) {
         doctorLine: node.doctorLines.at(-1) || "",
         signal
       });
+
+      // LLM分類の待機中にoperator操作(次へ/分岐/ジャンプ等)で状態が動いた場合は、
+      // 古い判定結果を捨てて何も発話しない(operator操作を上書きしない)。
+      if (session.nodeId !== node.id) {
+        console.warn(
+          "[scenario] utterance_superseded",
+          JSON.stringify({
+            sessionId: session.sessionId,
+            staleNodeId: node.id,
+            nodeId: session.nodeId
+          })
+        );
+
+        return {
+          kind: "superseded",
+          deviation: null,
+          nodeId: session.nodeId,
+          scene: getNode(currentScenario, session.nodeId)?.scene ?? null,
+          intent: null,
+          lines: []
+        };
+      }
 
       if (match) {
         const { lines, nodeId } = collectLinesFrom(currentScenario, match.next);
@@ -265,6 +303,12 @@ export function createScenarioEngine({ scenario = null } = {}) {
     };
   }
 
+  // セッション再接続時に旧セッションの進行を新セッションへ引き継ぐ。
+  function adoptProgress(fromSessionId, toSessionId) {
+    const currentScenario = resolveScenario();
+    return adoptScenarioSession(fromSessionId, toSessionId, currentScenario.entryNode);
+  }
+
   return {
     getSessionState,
     handlePatientUtterance,
@@ -272,7 +316,8 @@ export function createScenarioEngine({ scenario = null } = {}) {
     forceNext,
     jumpTo,
     reset,
-    getNodeLines
+    getNodeLines,
+    adoptProgress
   };
 }
 

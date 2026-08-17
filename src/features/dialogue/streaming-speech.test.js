@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  normalizeAssistantSurfaceText,
-  sanitizeSpeechContent,
-  sanitizeSubtitleContent
-} from "./speech-content.js";
+import { sanitizeSpeechContent, sanitizeSubtitleContent } from "./speech-content.js";
 import { flushSpeechSegment, pullCompletedSpeechSegments } from "./streaming-speech.js";
 
 test("pullCompletedSpeechSegments emits completed sentences and keeps unfinished remainder", () => {
@@ -45,43 +41,16 @@ test("flushSpeechSegment removes leading labels and bullet markers", () => {
   });
 });
 
-test("normalizeAssistantSurfaceText removes AI backstage phrasing", () => {
+test("sanitizeSpeechContent applies pronunciation normalization", () => {
   assert.equal(
-    normalizeAssistantSurfaceText(
-      "今回いただいた情報では、四期の小細胞肺がんについては治療が必要です。"
-    ),
-    "四期の小細胞肺がんについては治療が必要です。"
-  );
-  assert.equal(
-    normalizeAssistantSurfaceText(
-      "この取得結果からは、なお、その点についてはガイドラインでは明記されていませんが、一般的にはそう考えられます。"
-    ),
-    "一般的にはそう考えられます。"
-  );
-  assert.equal(
-    normalizeAssistantSurfaceText(
-      "小細胞肺がんの治療については今回いただいた情報には含まれていませんが、一般的には抗がん剤が中心です。"
-    ),
-    "小細胞肺がんの治療については、一般的には抗がん剤が中心です。"
-  );
-  assert.equal(
-    normalizeAssistantSurfaceText(
-      "この点はガイドラインで個別には触れられていません。治療は病期で変わります。"
-    ),
-    "この点はガイドラインで個別には触れられていません。治療は病期で変わります。"
-  );
-});
-
-test("sanitizeSpeechContent also strips AI backstage phrasing", () => {
-  assert.equal(
-    sanitizeSpeechContent("今回いただいた情報では、EGFR陽性なら分子標的治療が中心です。"),
+    sanitizeSpeechContent("EGFR陽性なら分子標的治療が中心です。"),
     "イージーエフアール陽性ならぶんしひょうてきちりょうが中心です。"
   );
 });
 
-test("sanitizeSubtitleContent keeps natural kanji while stripping backstage phrasing", () => {
+test("sanitizeSubtitleContent keeps natural kanji", () => {
   assert.equal(
-    sanitizeSubtitleContent("今回いただいた情報では、EGFR陽性なら分子標的治療が中心です。"),
+    sanitizeSubtitleContent("EGFR陽性なら分子標的治療が中心です。"),
     "EGFR陽性なら分子標的治療が中心です。"
   );
 });

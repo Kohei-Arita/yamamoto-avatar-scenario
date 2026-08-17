@@ -6,6 +6,7 @@ const remoteCanvas = document.getElementById("remoteCanvas");
 const remoteAudio = document.getElementById("remoteAudio");
 const videoPlaceholder = document.getElementById("videoPlaceholder");
 const subtitleBox = document.getElementById("subtitleBox");
+const audioUnlockOverlay = document.getElementById("audioUnlockOverlay");
 const startBtn = document.getElementById("startBtn");
 const stopBtn = document.getElementById("stopBtn");
 const fullscreenBtn = document.getElementById("fullscreenBtn");
@@ -55,6 +56,53 @@ function showHudTemporarily() {
   scheduleHudHide();
 }
 
+// ブラウザの自動再生制限で音声がブロックされた場合の解除オーバーレイ。
+function showAudioUnlockOverlay() {
+  audioUnlockOverlay?.classList.remove("hidden");
+}
+
+audioUnlockOverlay?.addEventListener("click", () => {
+  remoteAudio.play().catch(() => {});
+  remoteVideo.play().catch(() => {});
+  audioUnlockOverlay.classList.add("hidden");
+});
+
+// 予期しない切断(サンドボックス時間切れ・ネットワーク断など)からの自動再接続。
+// autostart=1 のときのみ有効。手動Stopでは再接続しない。
+const AUTO_RESTART_DELAYS_MS = [2000, 5000, 10000];
+let manualStop = false;
+let autoRestartAttempt = 0;
+let autoRestartTimer = null;
+
+function scheduleAutoRestart() {
+  if (!shouldAutostart || manualStop) {
+    return;
+  }
+
+  if (autoRestartAttempt >= AUTO_RESTART_DELAYS_MS.length) {
+    setStageMessage("再接続に失敗しました。Startボタンで再開してください。");
+    return;
+  }
+
+  const delay = AUTO_RESTART_DELAYS_MS[autoRestartAttempt];
+  autoRestartAttempt += 1;
+  setStageMessage(`切断されました。${Math.round(delay / 1000)}秒後に再接続します...`);
+
+  clearTimeout(autoRestartTimer);
+  autoRestartTimer = setTimeout(async () => {
+    try {
+      startBtn.disabled = true;
+      stopBtn.disabled = false;
+      await manager.start({ skipMicrophonePreflight: true });
+      autoRestartAttempt = 0;
+      scheduleHudHide();
+    } catch (error) {
+      console.error("auto-restart failed", error);
+      scheduleAutoRestart();
+    }
+  }, delay);
+}
+
 const manager = createSessionManager({
   LivekitClient: window.LivekitClient,
   elements: {
@@ -69,11 +117,13 @@ const manager = createSessionManager({
   showSubtitles,
   onConnectionStateChange: setConnectionState,
   onMicStateChange: setMicState,
+  onAudioBlocked: showAudioUnlockOverlay,
   onError: (error) => console.error(error),
   onDisconnected: () => {
     clearTimeout(hudHideTimer);
     setStageMessage("");
     resetButtons();
+    scheduleAutoRestart();
   }
 });
 
@@ -84,6 +134,8 @@ startBtn.addEventListener("click", async () => {
     return;
   }
 
+  manualStop = false;
+  autoRestartAttempt = 0;
   startBtn.disabled = true;
   stopBtn.disabled = false;
 
@@ -101,6 +153,8 @@ startBtn.addEventListener("click", async () => {
 
 stopBtn.addEventListener("click", async () => {
   showHudTemporarily();
+  manualStop = true;
+  clearTimeout(autoRestartTimer);
 
   try {
     await manager.stop();
@@ -163,9 +217,10 @@ async function callOperatorApi(path, body = {}) {
 
 const OPERATOR_BRANCH_KEYS = { 1: "A", 2: "B", 3: "C" };
 
+let operatorState = null;
+
 function resolveOperatorBranch(slot) {
-  const state = window.__operatorState;
-  const branches = state?.awaitingBranches || [];
+  const branches = operatorState?.awaitingBranches || [];
   const suffix = OPERATOR_BRANCH_KEYS[slot];
   return (
     branches.find((entry) => entry.branch.endsWith(`_${suffix}`))?.branch ||
@@ -187,7 +242,7 @@ async function refreshOperatorState() {
     const data = await response.json().catch(() => ({}));
 
     if (data?.ok) {
-      window.__operatorState = data.state;
+      operatorState = data.state;
     }
   } catch (error) {
     console.error("operator state error", error);
@@ -205,7 +260,8 @@ document.addEventListener("keydown", (event) => {
     fullscreenBtn.click();
   }
 
-  if (key === "s") {
+  // 本番表示(controls=0)では、キー誤操作でセッションが止まらないよう s を無効化する。
+  if (key === "s" && !hideControls) {
     if (manager.isStarted()) {
       stopBtn.click();
     } else {
@@ -256,6 +312,7 @@ if (shouldAutostart) {
           describeSessionError(error, { defaultMessage: "セッション開始に失敗しました。" })
         );
         resetButtons();
+        scheduleAutoRestart();
       }
     },
     { once: true }

@@ -28,6 +28,8 @@ const env = {
   liveAvatarVoiceStyle: float("LIVEAVATAR_VOICE_STYLE", "0.15"),
   liveAvatarTranscriptDebounceMs: int("LIVEAVATAR_TRANSCRIPT_DEBOUNCE_MS", "1200"),
   liveAvatarTranscriptContinuationMs: int("LIVEAVATAR_TRANSCRIPT_CONTINUATION_MS", "1800"),
+  // false: アバター発話中の患者音声(エコー含む)を完全に無視する(会場スピーカーの回り込みが激しい場合用)
+  liveAvatarAllowInterrupt: bool("LIVEAVATAR_ALLOW_INTERRUPT", "true"),
   liveAvatarAssistantName: str("LIVEAVATAR_ASSISTANT_NAME", "山本"),
   liveAvatarAssistantPersona: str("LIVEAVATAR_ASSISTANT_PERSONA", "肺がん専門の内科医"),
   liveAvatarOpeningGreeting: str("LIVEAVATAR_OPENING_GREETING", ""),
@@ -47,7 +49,6 @@ const env = {
   ),
   dialogueConversationHistoryLimit: int("DIALOGUE_CONVERSATION_HISTORY_LIMIT", "12"),
   dialogueSessionLimit: int("DIALOGUE_SESSION_LIMIT", "200"),
-  dialogueEndpointApiKey: str("DIALOGUE_ENDPOINT_API_KEY", str("RAG_ENDPOINT_API_KEY")),
   openAiApiBaseUrl: str("OPENAI_API_BASE_URL", "https://api.openai.com/v1"),
   openAiApiKey: str("OPENAI_API_KEY"),
   openAiModel: str("OPENAI_MODEL", "gpt-4.1-mini")
