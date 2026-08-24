@@ -28,8 +28,9 @@ const env = {
   liveAvatarVoiceStyle: float("LIVEAVATAR_VOICE_STYLE", "0.15"),
   liveAvatarTranscriptDebounceMs: int("LIVEAVATAR_TRANSCRIPT_DEBOUNCE_MS", "1200"),
   liveAvatarTranscriptContinuationMs: int("LIVEAVATAR_TRANSCRIPT_CONTINUATION_MS", "1800"),
-  // false: アバター発話中の患者音声(エコー含む)を完全に無視する(会場スピーカーの回り込みが激しい場合用)
-  liveAvatarAllowInterrupt: bool("LIVEAVATAR_ALLOW_INTERRUPT", "true"),
+  // false(既定): アバター発話中の患者音声(エコー含む)を完全に無視し、必ず話し切らせる。
+  // 会場が広く雑音・スピーカー回り込みを拾いやすいため、割り込みは既定で無効。
+  liveAvatarAllowInterrupt: bool("LIVEAVATAR_ALLOW_INTERRUPT", "false"),
   liveAvatarAssistantName: str("LIVEAVATAR_ASSISTANT_NAME", "山本"),
   liveAvatarAssistantPersona: str("LIVEAVATAR_ASSISTANT_PERSONA", "肺がん専門の内科医"),
   liveAvatarOpeningGreeting: str("LIVEAVATAR_OPENING_GREETING", ""),

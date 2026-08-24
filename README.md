@@ -53,15 +53,15 @@ npm run dev   # → http://localhost:3000
 
 ## 主要な環境変数
 
-| 変数                         | 説明                                                                                    |
-| ---------------------------- | --------------------------------------------------------------------------------------- |
-| `SCENARIO_ID`                | シナリオID（既定: `haigan-2026`）                                                       |
-| `SCENARIO_DIR`               | シナリオJSONの配置先（既定: `./data/scenarios`）                                        |
-| `SCENARIO_SPEECH_MODE`       | `fixed`（固定文・本番推奨）/ `paraphrase`（LLM言い換え+禁止語チェック、リハーサル用）   |
-| `SCENARIO_INTENT_LLM`        | キーワード不一致時にLLMでintent分類するか（既定: true）                                 |
-| `OPERATOR_TOKEN`             | オペレーターAPIのBearerトークン（**必須**。未設定だと操作APIは503）                     |
-| `LIVEAVATAR_ALLOW_INTERRUPT` | `false`にするとアバター発話中の患者音声を完全に無視（スピーカー回り込みが激しい会場用） |
-| `LIVEAVATAR_*` / `OPENAI_*`  | LiveAvatar・OpenAI接続設定（`.env.example` 参照）                                       |
+| 変数                         | 説明                                                                                              |
+| ---------------------------- | ------------------------------------------------------------------------------------------------- |
+| `SCENARIO_ID`                | シナリオID（既定: `haigan-2026`）                                                                 |
+| `SCENARIO_DIR`               | シナリオJSONの配置先（既定: `./data/scenarios`）                                                  |
+| `SCENARIO_SPEECH_MODE`       | `fixed`（固定文・本番推奨）/ `paraphrase`（LLM言い換え+禁止語チェック、リハーサル用）             |
+| `SCENARIO_INTENT_LLM`        | キーワード不一致時にLLMでintent分類するか（既定: true）                                           |
+| `OPERATOR_TOKEN`             | オペレーターAPIのBearerトークン（**必須**。未設定だと操作APIは503）                               |
+| `LIVEAVATAR_ALLOW_INTERRUPT` | 既定`false`＝アバターが話し切るまで患者音声を無視（会場の雑音・回り込み対策）。`true`で割り込み可 |
+| `LIVEAVATAR_*` / `OPENAI_*`  | LiveAvatar・OpenAI接続設定（`.env.example` 参照）                                                 |
 
 ## 台本（シナリオ）の編集
 
@@ -87,6 +87,7 @@ npm run dev   # → http://localhost:3000
 | --------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
 | ASRが出す句読点だけ・一音だけの断片で台本が飛ぶ／発話が中断する | 非発話の断片をブラウザ・サーバー双方で無視（「はい」等の短答は通す）                   |
 | スピーカーの音がマイクに回り込み、患者発話として誤認される      | エコーガード: 直近のアバター発話とほぼ同一の文字起こしを無視                           |
+| アバターの発話中に会場の雑音や咳で発話が中断される              | 応答中（生成〜発話完了）は自分のマイクを物理的にミュートし、文字起こしも無視           |
 | 発話が途切れて結合再送され、台本が二重に進む                    | 結合再送に`revision`フラグを付け、サーバーが直前の患者遷移を巻き戻してから再判定       |
 | 開始挨拶が無音（エージェント入室前にコマンドが失われる）        | アバター音声トラックの到着を待って挨拶を送信 + `speak_started`未着時は一度だけ自動再送 |
 | `speak_started/ended`イベントの取りこぼしで音声が止まる         | ウォッチドッグが一定時間で発話キューを強制前進                                         |
@@ -97,7 +98,7 @@ npm run dev   # → http://localhost:3000
 | 公開URLへの野良リクエストで台本が進む                           | このサーバーが発行したLiveAvatarセッションID以外からの対話APIを403で拒否               |
 | 会場画面でのキー誤操作                                          | `controls=0`時は`s`（セッション停止）キーを無効化                                      |
 
-トラブル時は `/operator` の進行ログとサーバーログを確認してください。`utterance_ignored`（非発話の断片を無視）、`echo_ignored`（回り込みを無視）、`watchdog.speak_start_retry`（発話コマンド再送）、`revision_rewind`（言い直しによる巻き戻し）が該当ログです。
+トラブル時は `/operator` の進行ログとサーバーログを確認してください。`utterance_ignored`（非発話の断片を無視）、`echo_ignored`（回り込みを無視）、`watchdog.speak_start_retry`（発話コマンド再送）、`revision_rewind`（言い直しによる巻き戻し）、`microphone.muted` / `microphone.unmuted`（発話中のマイク開閉）が該当ログです。
 
 リハーサル用の手動チェックリストは [docs/rehearsal.md](docs/rehearsal.md) にあります。
 
@@ -108,7 +109,7 @@ npm run dev   # → http://localhost:3000
 ## テストと品質確認
 
 ```bash
-npm test        # 82件: スキーマ検証 / 9経路通し / intent分類 / 逸脱応答 / SSE / operator認証 / 非発話フィルタ / エコーガード / revision巻き戻し / セッション引き継ぎ ほか
+npm test        # 91件: スキーマ検証 / 9経路通し / intent分類 / 逸脱応答 / SSE / operator認証 / 非発話フィルタ / エコーガード / revision巻き戻し / セッション引き継ぎ ほか
 npm run lint
 npm run format
 ```

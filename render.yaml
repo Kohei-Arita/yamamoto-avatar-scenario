@@ -27,6 +27,9 @@ services:
         value: H264
       - key: LIVEAVATAR_SELF_CONTROLLED
         value: "true"
+      # アバターが話し切るまで患者音声で割り込ませない(会場の雑音・回り込み対策)
+      - key: LIVEAVATAR_ALLOW_INTERRUPT
+        value: "false"
       - key: LIVEAVATAR_ASSISTANT_NAME
         value: 山本
       - key: LIVEAVATAR_ASSISTANT_PERSONA

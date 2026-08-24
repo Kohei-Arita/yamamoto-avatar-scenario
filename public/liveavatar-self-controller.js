@@ -114,6 +114,9 @@ export function createSelfControlledConversation({
   respondToTextStream,
   debounceMs = 1200,
   continuationWindowMs = 1800,
+  // 同じ発話への結合(継続扱い)を許す最大回数。上限がないと、雑音などで句点の付かない
+  // 断片が継続時間内に届き続けた場合、結合が際限なく伸び続けてしまう。
+  maxContinuationChainLength = 5,
   flushPollMs = 250,
   interruptGraceMs = 250,
   allowInterrupt = true,
@@ -123,6 +126,10 @@ export function createSelfControlledConversation({
   speakEndTimeoutBaseMs = 5000,
   speakEndTimeoutPerCharMs = 350,
   speakEndTimeoutMaxMs = 45000,
+  // マイクのミュート/解除に失敗したときの再試行設定。特に「解除の失敗」を放置すると
+  // 患者の声が二度と届かなくなるため、必ず再試行して実状態を追いつかせる。
+  micSyncRetryMs = 500,
+  micSyncMaxRetries = 5,
   echoGuard = createEchoGuard(),
   onLog = () => {},
   onAnswer = () => {},
@@ -144,10 +151,24 @@ export function createSelfControlledConversation({
   let pendingSpeechSegment = null;
   let lastFinalizedTranscript = "";
   let lastFinalizedAt = 0;
+  let finalizedChainLength = 0;
   let dispatchResumeTimer = null;
   let interruptBarrierUntil = 0;
   let speakStartWatchdogTimer = null;
   let speakEndWatchdogTimer = null;
+  // アバター発話中は自分のマイク音声そのものを物理的にミュートする。
+  // allowInterrupt=falseは受信した文字起こしを無視するだけで、LiveAvatar側が
+  // マイク音声を独自に検知して反応する経路までは止められない。マイクの発行自体を
+  // 止めれば、相手に音声が一切届かなくなるため、その経路も含めて確実に防げる。
+  //
+  // 「あるべき状態(desired)」と「実際に適用できた状態(applied)」を分けて持つ。
+  // setMicrophoneEnabledは非同期で失敗もするため、呼び出しただけで適用済みとみなすと
+  // 実状態とずれる。特に解除失敗を適用済み扱いにすると、マイクが落ちたまま復帰しない。
+  let desiredMicrophoneMuted = false;
+  let appliedMicrophoneMuted = false;
+  let isMicrophoneSyncInFlight = false;
+  let microphoneSyncRetryTimer = null;
+  let microphoneSyncRetryCount = 0;
 
   function clearBuffer() {
     bufferedTranscripts = [];
@@ -184,6 +205,7 @@ export function createSelfControlledConversation({
       onLog(`watchdog.speak_end_timeout: ${segment.speechText}`);
       activeSpeechSegment = null;
       isSpeaking = false;
+      syncMicrophoneMuteState();
 
       if (speechQueue.length === 0 && !pendingSpeechSegment) {
         onSpeechIdle();
@@ -222,6 +244,7 @@ export function createSelfControlledConversation({
       pendingSpeechSegment = null;
       activeSpeechSegment = segment;
       isSpeaking = true;
+      syncMicrophoneMuteState();
       onSpeechStart(segment.subtitleText || segment.speechText || "");
       startSpeakEndWatchdog(segment);
     }, speakStartTimeoutMs);
@@ -320,22 +343,99 @@ export function createSelfControlledConversation({
     );
   }
 
-  function rememberFinalizedTranscript(text) {
+  function clearMicrophoneSyncRetryTimer() {
+    clearTimeout(microphoneSyncRetryTimer);
+    microphoneSyncRetryTimer = null;
+  }
+
+  function scheduleMicrophoneSyncRetry() {
+    if (microphoneSyncRetryTimer || microphoneSyncRetryCount >= micSyncMaxRetries) {
+      return;
+    }
+
+    microphoneSyncRetryCount += 1;
+    microphoneSyncRetryTimer = setTimeout(() => {
+      microphoneSyncRetryTimer = null;
+      applyMicrophoneMuteState();
+    }, micSyncRetryMs);
+  }
+
+  // desired と applied の差を埋める。多重呼び出しは直列化する
+  // (ミュート→解除が短時間に連続したとき、完了順が入れ替わって実状態が反転しないように)。
+  function applyMicrophoneMuteState() {
+    if (isMicrophoneSyncInFlight || desiredMicrophoneMuted === appliedMicrophoneMuted) {
+      return;
+    }
+
+    const room = getRoom();
+
+    if (typeof room?.localParticipant?.setMicrophoneEnabled !== "function") {
+      // まだ部屋に接続していない等で適用できない。desiredは保持したままにしておき、
+      // 次のsyncか再試行で追いつかせる(ここでappliedを進めると実状態とずれる)。
+      return;
+    }
+
+    const targetMuted = desiredMicrophoneMuted;
+    isMicrophoneSyncInFlight = true;
+
+    Promise.resolve(room.localParticipant.setMicrophoneEnabled(!targetMuted))
+      .then(() => {
+        appliedMicrophoneMuted = targetMuted;
+        microphoneSyncRetryCount = 0;
+        isMicrophoneSyncInFlight = false;
+        onLog(targetMuted ? "microphone.muted" : "microphone.unmuted");
+        // 待っている間にdesiredが変わっていた場合に追随する。
+        applyMicrophoneMuteState();
+      })
+      .catch((error) => {
+        isMicrophoneSyncInFlight = false;
+        onLog(`microphone.${targetMuted ? "mute" : "unmute"}_failed: ${error.message}`);
+        // 失敗直後にその場で再実行すると間隔なしで回り続けるため、必ず遅延を挟む。
+        scheduleMicrophoneSyncRetry();
+      });
+  }
+
+  // hasActiveResponse()の状態が変わるたびに呼ぶ。応答中(生成〜発話完了まで)はマイクを
+  // ミュートし、完全にアイドルに戻ったらミュートを解除する。
+  function syncMicrophoneMuteState() {
+    const shouldMute = hasActiveResponse();
+
+    if (shouldMute !== desiredMicrophoneMuted) {
+      desiredMicrophoneMuted = shouldMute;
+      // 目標が変わったので、前の目標に対する再試行の残りカウントはリセットする。
+      microphoneSyncRetryCount = 0;
+      clearMicrophoneSyncRetryTimer();
+    }
+
+    applyMicrophoneMuteState();
+  }
+
+  function rememberFinalizedTranscript(text, chainLength) {
     lastFinalizedTranscript = text;
     lastFinalizedAt = Date.now();
+    finalizedChainLength = chainLength;
   }
 
   function clearRecentFinalizedTranscript() {
     lastFinalizedTranscript = "";
     lastFinalizedAt = 0;
+    finalizedChainLength = 0;
   }
 
+  // 直前の確定発話への応答がすでに話し終わっていても、句読点なしで終わった発話の
+  // 続きが継続時間内に届いた場合は「同じ発話の続き」として結合する。
+  // (hasActiveResponse()を条件にすると、前半への応答が先に終わってしまった長い発話で
+  //  後半が独立した新規発話として扱われ、台本が誤って二重に進む事故になる)
+  //
+  // ただし句点の付かない断片が継続時間内に届き続けると際限なく結合してしまうため、
+  // 同じ発話への結合回数には上限(maxContinuationChainLength)を設ける。
+  // 上限に達したら、それ以降の断片は結合せず新しい発話として扱う。
   function shouldAppendToRecentTranscript() {
     return (
-      hasActiveResponse() &&
       Boolean(lastFinalizedTranscript) &&
       !hasTerminalPunctuation(lastFinalizedTranscript) &&
-      Date.now() - lastFinalizedAt <= continuationWindowMs
+      Date.now() - lastFinalizedAt <= continuationWindowMs &&
+      finalizedChainLength < maxContinuationChainLength
     );
   }
 
@@ -420,6 +520,7 @@ export function createSelfControlledConversation({
         responseId: responseId || createClientId("response")
       })
     );
+    syncMicrophoneMuteState();
     await dispatchNextSpeech();
   }
 
@@ -439,6 +540,7 @@ export function createSelfControlledConversation({
     clearDispatchResumeTimer();
     streamAbortController?.abort();
     streamAbortController = null;
+    syncMicrophoneMuteState();
     onSpeechReset();
     interruptAvatar().catch(() => {});
   }
@@ -446,6 +548,8 @@ export function createSelfControlledConversation({
   async function flushBufferedTranscripts() {
     const combinedText = normalizeTranscript(bufferedTranscripts);
     const isRevision = bufferIsRevision;
+    // 継続結合された発話ならチェーン長を1伸ばす。新規の発話ならチェーン長は1から。
+    const chainLength = isRevision ? finalizedChainLength + 1 : 1;
 
     clearBuffer();
 
@@ -456,8 +560,9 @@ export function createSelfControlledConversation({
     const currentGenerationId = ++generationId;
     const responseId = createClientId("response");
     isGenerating = true;
+    syncMicrophoneMuteState();
     streamAbortController = new AbortController();
-    rememberFinalizedTranscript(combinedText);
+    rememberFinalizedTranscript(combinedText, chainLength);
     onLog(`user.transcription.final: ${combinedText}${isRevision ? " (revision)" : ""}`);
 
     try {
@@ -484,6 +589,7 @@ export function createSelfControlledConversation({
 
       onAnswer(result);
       isGenerating = false;
+      syncMicrophoneMuteState();
       streamAbortController = null;
     } catch (error) {
       if (currentGenerationId !== generationId) {
@@ -496,6 +602,7 @@ export function createSelfControlledConversation({
       }
 
       isGenerating = false;
+      syncMicrophoneMuteState();
       streamAbortController = null;
       onError(error);
 
@@ -566,6 +673,15 @@ export function createSelfControlledConversation({
       // 「前回の患者遷移を巻き戻してから判定し直す」ことを伝える。
       bufferIsRevision = true;
       onLog(`user.transcription.resume: ${lastFinalizedTranscript}`);
+    } else if (
+      bufferedTranscripts.length === 0 &&
+      finalizedChainLength >= maxContinuationChainLength &&
+      Boolean(lastFinalizedTranscript) &&
+      !hasTerminalPunctuation(lastFinalizedTranscript) &&
+      Date.now() - lastFinalizedAt <= continuationWindowMs
+    ) {
+      // 結合回数の上限に達したため、以降の断片は結合せず独立した発話として扱う。
+      onLog(`user.transcription.continuation_limit_reached: ${lastFinalizedTranscript}`);
     }
 
     bufferedTranscripts.push(normalizedText);
@@ -610,6 +726,7 @@ export function createSelfControlledConversation({
       pendingSpeechSegment = null;
       activeSpeechSegment = speechSegment;
       isSpeaking = true;
+      syncMicrophoneMuteState();
       clearTimeout(speakStartWatchdogTimer);
       speakStartWatchdogTimer = null;
       startSpeakEndWatchdog(speechSegment);
@@ -637,6 +754,7 @@ export function createSelfControlledConversation({
 
       activeSpeechSegment = null;
       isSpeaking = false;
+      syncMicrophoneMuteState();
       clearTimeout(speakEndWatchdogTimer);
       speakEndWatchdogTimer = null;
 
@@ -654,6 +772,8 @@ export function createSelfControlledConversation({
     cancelCurrentResponse();
     clearBuffer();
     clearRecentFinalizedTranscript();
+    // セッション終了後に残ったタイマーが発火して、切断済みの部屋を触らないようにする。
+    clearMicrophoneSyncRetryTimer();
     echoGuard.reset();
   }
 
