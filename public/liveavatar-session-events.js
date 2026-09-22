@@ -1,55 +1,26 @@
 import { createSelfControlledConversation } from "./liveavatar-self-controller.js";
-import { extractAvatarSubtitleText, isAvatarSubtitleEndEvent } from "./liveavatar-subtitles.js";
 
 const AGENT_RESPONSE_TOPIC = "agent-response";
 
 export function createLiveAvatarDataHandler({
   getSelfControlledConversation = () => null,
-  isSelfControlled = () => false,
-  subtitleController,
   onUserTranscription = () => {},
-  onAvatarSubtitle = () => {},
   onSessionStopped = () => {}
 } = {}) {
   const decoder = new TextDecoder();
 
   return function handleDataReceived(payload, participant, kind, topic) {
+    if (topic !== AGENT_RESPONSE_TOPIC) return;
+    let event;
     try {
-      const event = JSON.parse(decoder.decode(payload));
-
-      if (topic !== AGENT_RESPONSE_TOPIC) {
-        return;
-      }
-
-      const selfControlled = isSelfControlled();
-
-      if (selfControlled) {
-        getSelfControlledConversation()?.handleAgentResponseEvent(event);
-      }
-
-      if (event.event_type === "user.transcription" && event.text) {
-        onUserTranscription(event.text);
-      }
-
-      if (!selfControlled) {
-        const subtitleText = extractAvatarSubtitleText(event);
-
-        if (subtitleText) {
-          subtitleController?.set(subtitleText);
-          onAvatarSubtitle(subtitleText);
-        }
-
-        if (isAvatarSubtitleEndEvent(event)) {
-          subtitleController?.clearSoon();
-        }
-      }
-
-      if (event.event_type === "session.stopped") {
-        onSessionStopped(event);
-      }
+      event = JSON.parse(decoder.decode(payload));
     } catch {
-      // Ignore non-JSON or unexpected data payloads.
+      return; // データチャンネル上のJSON以外のメッセージ。
     }
+    if (!event || typeof event !== "object") return;
+    getSelfControlledConversation()?.handleAgentResponseEvent(event);
+    if (event.event_type === "user.transcription" && event.text) onUserTranscription(event.text);
+    if (event.event_type === "session.stopped") onSessionStopped(event);
   };
 }
 
@@ -61,7 +32,10 @@ export function createSelfControlledSession({
   subtitleController,
   onLog = () => {},
   onAnswer = () => {},
-  onError = () => {}
+  onError = () => {},
+  onInputTimeout = async () => {},
+  onMicStateChange = () => {},
+  microphoneInitiallyMuted = false
 } = {}) {
   if (!liveAvatarConfig?.selfControlled) {
     return null;
@@ -73,13 +47,25 @@ export function createSelfControlledSession({
     debounceMs: liveAvatarConfig.transcriptDebounceMs || 1200,
     continuationWindowMs: liveAvatarConfig.transcriptContinuationMs || 1800,
     allowInterrupt: liveAvatarConfig.allowInterrupt !== false,
-    respondToTextStream: ({ sessionId, text, revision, signal, onSpeechSegment }) =>
+    onMicStateChange,
+    onInputTimeout,
+    microphoneInitiallyMuted,
+    respondToTextStream: ({
+      sessionId,
+      text,
+      revision,
+      expectedVersion,
+      signal,
+      onSpeechSegment
+    }) =>
       respondWithDialogueStream(sessionId, text, {
         signal,
         revision,
+        expectedVersion,
         onEvent: async (event) => {
           if (event.type === "speech_segment" && (event.data?.speechText || event.data?.text)) {
             await onSpeechSegment({
+              state: event.data.state,
               speechText: event.data?.speechText || event.data?.text || "",
               subtitleText:
                 event.data?.subtitleText || event.data?.speechText || event.data?.text || ""
@@ -100,18 +86,4 @@ export function createSelfControlledSession({
     },
     onError
   });
-}
-
-export async function startOpeningGreeting(liveAvatarConfig, selfControlledConversation) {
-  if (!liveAvatarConfig?.selfControlled) {
-    return;
-  }
-
-  const openingGreeting = String(liveAvatarConfig.openingGreeting || "").trim();
-
-  if (!openingGreeting) {
-    return;
-  }
-
-  await selfControlledConversation?.speakText(openingGreeting);
 }

@@ -6,6 +6,7 @@ import {
   postOperatorNext,
   postOperatorReset,
   postOperatorSay,
+  postOperatorInput,
   requireOperatorToken
 } from "./operator.controller.js";
 
@@ -19,5 +20,6 @@ router.post("/api/operator/next", postOperatorNext);
 router.post("/api/operator/jump", postOperatorJump);
 router.post("/api/operator/reset", postOperatorReset);
 router.post("/api/operator/say", postOperatorSay);
+router.post("/api/operator/input", postOperatorInput);
 
 export default router;

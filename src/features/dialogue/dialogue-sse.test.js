@@ -74,15 +74,16 @@ test("SSEはspeech_segment→doneの順で応答する", async () => {
   assert.equal(doneEvents.length, 1);
   assert.equal(events.at(-1).event, "done");
 
-  // speech_segment payload は text/speechText/subtitleText の3フィールド構成
+  // 従来の発話フィールドに、入力の開閉と競合検出に使うstateを追加。
   for (const { data } of segmentEvents) {
-    assert.deepEqual(Object.keys(data).sort(), ["speechText", "subtitleText", "text"]);
+    assert.deepEqual(Object.keys(data).sort(), ["speechText", "state", "subtitleText", "text"]);
+    assert.equal(data.state.nodeId, "s1_symptoms");
     assert.equal(data.text, data.speechText);
     assert.ok(data.speechText.length > 0);
   }
 
   const done = doneEvents[0].data;
-  assert.deepEqual(Object.keys(done).sort(), ["content", "ok", "speechContent"]);
+  assert.deepEqual(Object.keys(done).sort(), ["content", "ok", "speechContent", "state"]);
   assert.equal(done.ok, true);
 });
 
@@ -147,4 +148,60 @@ test("operator branchはoperator遷移ノード以外で409、待機ノードで
     body: JSON.stringify({ sessionId, branch: "voting1_Z" })
   });
   assert.equal(unknownBranch.status, 409);
+});
+
+test("operatorの二重操作を進行番号で拒否し、入力停止はサーバーにも適用する", async () => {
+  const sessionId = "operator-version-test";
+  const headers = {
+    "content-type": "application/json",
+    authorization: `Bearer ${env.operatorToken}`
+  };
+  const post = (action, body) =>
+    fetch(`${baseUrl}/api/operator/${action}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ sessionId, ...body })
+    });
+  const initial = await fetch(`${baseUrl}/api/operator/state?sessionId=${sessionId}`, {
+    headers
+  }).then((res) => res.json());
+  const first = await post("next", { expectedVersion: initial.state.version });
+  assert.equal(first.status, 200);
+  assert.equal((await post("next", { expectedVersion: initial.state.version })).status, 409);
+  const paused = await post("input", { paused: true }).then((res) => res.json());
+  assert.equal(paused.state.acceptsPatientInput, false);
+  const reply = await postStream(sessionId, "特にありません");
+  assert.deepEqual(
+    reply.events.map((e) => e.event),
+    ["done"]
+  );
+  assert.equal(reply.events[0].data.state.nodeId, "s1_symptoms");
+});
+
+test("オペレーターSSEには置換フラグと入力状態を付ける", async () => {
+  const sessionId = "operator-events-test";
+  const controller = new AbortController();
+  const response = await fetch(`${baseUrl}/api/dialogue/events?sessionId=${sessionId}`, {
+    signal: controller.signal
+  });
+  const reader = response.body.getReader();
+  try {
+    const connected = parseSseEvents(new TextDecoder().decode((await reader.read()).value));
+    assert.equal(connected[0].event, "connected");
+    assert.equal(connected[0].data.state.acceptsPatientInput, true);
+    const result = await fetch(`${baseUrl}/api/operator/jump`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${env.operatorToken}` },
+      body: JSON.stringify({ sessionId, nodeId: "s1_voting1_wait", expectedVersion: 0 })
+    }).then((res) => res.json());
+    assert.equal(result.delivery.delivered, true);
+    const events = parseSseEvents(new TextDecoder().decode((await reader.read()).value));
+    assert.equal(events[0].event, "speech_segment");
+    assert.equal(events[0].data.replace, true);
+    assert.equal(events[0].data.state.acceptsPatientInput, false);
+    assert.equal(events[0].data.state.version, result.state.version);
+  } finally {
+    controller.abort();
+    await reader.cancel().catch(() => {});
+  }
 });

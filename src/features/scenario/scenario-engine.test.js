@@ -236,11 +236,12 @@ test("revisionでもoperator操作後は巻き戻さない", async () => {
   await engine.handlePatientUtterance(sessionId, "元気にしています");
   engine.applyOperatorBranch(sessionId, "voting1_A");
 
-  // operator操作(branch)の後に revision が来ても、branch先の v1_smoking から動かさず通常判定
+  // operator操作後に届いた古い発話の言い直しは、分岐先への新規回答にしない。
   const result = await engine.handlePatientUtterance(sessionId, "はい、そうです", {
     revision: true
   });
-  assert.equal(result.nodeId, "s1_close");
+  assert.equal(result.nodeId, "v1_smoking");
+  assert.equal(result.kind, "superseded");
 });
 
 test("intent判定待ちの間にoperatorが操作した場合はsupersededを返し発話しない", async () => {
@@ -289,4 +290,76 @@ test("adoptProgressはentryノードのままの旧セッションからは引�
   engine.getSessionState(oldSessionId);
   assert.equal(engine.adoptProgress(oldSessionId, freshSessionId), false);
   assert.equal(engine.adoptProgress("no-such-session", freshSessionId), false);
+});
+
+test("判定中のリセットと同じノードへのジャンプも古い結果を失効させる", async () => {
+  for (const action of ["reset", "same-node"]) {
+    const engine = createScenarioEngine({ scenario });
+    const id = newSessionId();
+    engine.jumpTo(id, "s1_symptoms");
+    const pending = engine.handlePatientUtterance(id, "咳が出ます");
+    if (action === "reset") {
+      engine.reset(id);
+      engine.jumpTo(id, "s1_symptoms");
+    } else {
+      engine.jumpTo(id, "s1_symptoms");
+    }
+    const result = await pending;
+    assert.equal(result.kind, "superseded");
+    assert.deepEqual(result.lines, []);
+    assert.equal(engine.getSessionState(id).nodeId, "s1_symptoms");
+  }
+});
+
+test("古い進行番号の患者発話と入力停止中の発話は台本を進めない", async () => {
+  const engine = createScenarioEngine({ scenario });
+  const id = newSessionId();
+  const before = engine.getInputState(id);
+  engine.forceNext(id);
+  const stale = await engine.handlePatientUtterance(id, "特にありません", {
+    expectedVersion: before.version
+  });
+  assert.equal(stale.kind, "superseded");
+  engine.setInputPaused(id, true);
+  assert.equal((await engine.handlePatientUtterance(id, "特にありません")).kind, "ignored");
+  engine.setInputPaused(id, false);
+  assert.equal((await engine.handlePatientUtterance(id, "特にありません")).nodeId, "s1_adl");
+});
+
+test("応答受信前の言い直しは遷移前の進行番号でも巻き戻せる", async () => {
+  const engine = createScenarioEngine({ scenario });
+  const id = newSessionId();
+  engine.jumpTo(id, "s1_symptoms");
+  const before = engine.getInputState(id);
+  await engine.handlePatientUtterance(id, "特に", { expectedVersion: before.version });
+  const result = await engine.handlePatientUtterance(id, "特にありません", {
+    revision: true,
+    expectedVersion: before.version
+  });
+  assert.equal(result.nodeId, "s1_adl");
+  assert.equal(result.kind, "advance");
+});
+
+test("再接続・再発話ではauto遷移前を含む台詞全体を復元する", () => {
+  const engine = createScenarioEngine({ scenario });
+  const id = newSessionId();
+  const reply = engine.jumpTo(id, "v2_surgery");
+  assert.equal(reply.nodeId, "s2_closing");
+  assert.deepEqual(engine.repeat(id).lines, reply.lines);
+  const resumedId = newSessionId();
+  engine.adoptProgress(id, resumedId);
+  assert.deepEqual(engine.getNodeLines(resumedId).lines, reply.lines);
+  assert.equal(engine.getInputState(resumedId).acceptsPatientInput, false);
+});
+
+test("挨拶ノードでも手動入力停止を再接続へ引き継ぐ", () => {
+  const engine = createScenarioEngine({ scenario });
+  const oldId = newSessionId();
+  const newId = newSessionId();
+  engine.setInputPaused(oldId, true);
+  assert.equal(engine.adoptProgress(oldId, newId), true);
+  const state = engine.getInputState(newId);
+  assert.equal(state.nodeId, "s1_greeting");
+  assert.equal(state.inputPaused, true);
+  assert.equal(state.acceptsPatientInput, false);
 });

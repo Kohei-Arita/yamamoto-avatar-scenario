@@ -31,6 +31,10 @@
             <dd id="stateScene">-</dd>
             <dt>現在ノード</dt>
             <dd id="stateNode">-</dd>
+            <dt>会場画面</dt>
+            <dd id="stateConnection">未接続</dd>
+            <dt>患者の音声入力</dt>
+            <dd id="stateInput">-</dd>
             <dt>直近の患者発話</dt>
             <dd id="statePatient">-</dd>
             <dt>intent判定</dt>
@@ -47,10 +51,14 @@
           </div>
           <h2>操作</h2>
           <div class="operator-actions">
+            <button id="inputBtn" disabled>音声入力を停止</button>
             <button id="nextBtn">次へ（強制）</button>
             <button id="sayBtn">再発話</button>
             <button id="resetBtn" class="danger">リセット</button>
           </div>
+          <p class="operator-muted">
+            司会進行・拍手の間は音声入力を停止し、患者の返答前に再開してください。Voting待機中は自動で停止します。
+          </p>
           <div class="operator-jump">
             <select id="jumpSelect"></select>
             <button id="jumpBtn">ジャンプ</button>

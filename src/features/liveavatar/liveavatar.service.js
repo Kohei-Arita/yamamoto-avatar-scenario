@@ -23,10 +23,6 @@ function buildAvatarPersona() {
     avatarPersona.voice_id = env.liveAvatarVoiceId;
   }
 
-  if (!env.liveAvatarSelfControlled && env.liveAvatarContextId) {
-    avatarPersona.context_id = env.liveAvatarContextId;
-  }
-
   return avatarPersona;
 }
 
@@ -63,12 +59,11 @@ export function getPublicConfig() {
     transcriptDebounceMs: env.liveAvatarTranscriptDebounceMs,
     transcriptContinuationMs: env.liveAvatarTranscriptContinuationMs,
     allowInterrupt: env.liveAvatarAllowInterrupt,
+    microphoneAutoGainControl: env.liveAvatarMicrophoneAutoGainControl,
     assistantName: env.liveAvatarAssistantName,
     assistantPersona: env.liveAvatarAssistantPersona,
     openingGreeting: resolveOpeningGreeting(),
-    hasVoiceId: Boolean(env.liveAvatarVoiceId),
-    hasContextId: Boolean(env.liveAvatarContextId),
-    hasLlmConfigurationId: Boolean(env.liveAvatarLlmConfigurationId)
+    hasVoiceId: Boolean(env.liveAvatarVoiceId)
   };
 }
 
@@ -82,10 +77,6 @@ export async function createSessionToken() {
     avatar_persona: buildAvatarPersona(),
     video_settings: getDefaultVideoSettings()
   };
-
-  if (!env.liveAvatarSelfControlled && env.liveAvatarLlmConfigurationId) {
-    payload.llm_configuration = env.liveAvatarLlmConfigurationId;
-  }
 
   console.log(
     "[liveavatar] create_session_token",
@@ -155,5 +146,13 @@ export async function stopSession(sessionToken) {
     method: "POST",
     sessionToken,
     errorMessage: "Failed to stop LiveAvatar session"
+  });
+}
+
+export function keepSessionAlive(sessionId) {
+  return requestLiveAvatar("/sessions/keep-alive", {
+    method: "POST",
+    body: { session_id: sessionId },
+    errorMessage: "Failed to keep LiveAvatar session alive"
   });
 }

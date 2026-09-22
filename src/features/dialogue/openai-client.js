@@ -1,4 +1,5 @@
 import env from "../../config/env.js";
+import { setTimeout as delayWithSignal } from "node:timers/promises";
 import { getMessageText } from "./chat-message.js";
 
 const RETRYABLE_STATUS_CODES = new Set([429, 500, 502, 503]);
@@ -51,7 +52,7 @@ async function withRetry(fn, { maxRetries = MAX_RETRIES, signal } = {}) {
         JSON.stringify({ attempt: attempt + 1, delay, error: error.message })
       );
 
-      await new Promise((resolve) => setTimeout(resolve, delay));
+      await delayWithSignal(delay, undefined, { signal });
     }
   }
 }
@@ -83,6 +84,8 @@ async function postChatCompletions(payload, { signal, errorMessage }) {
 }
 
 export async function callUpstreamOpenAi(messages, { temperature = 0.2, signal, model } = {}) {
+  const timeout = AbortSignal.timeout(env.dialogueLlmTimeoutMs);
+  signal = signal ? AbortSignal.any([signal, timeout]) : timeout;
   return withRetry(
     async () => {
       const response = await postChatCompletions(

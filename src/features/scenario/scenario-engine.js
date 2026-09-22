@@ -50,12 +50,29 @@ function collectLinesFrom(scenario, startNodeId) {
 export function createScenarioEngine({ scenario = null } = {}) {
   const resolveScenario = () => scenario || getScenario();
 
+  function getInputState(sessionId) {
+    const currentScenario = resolveScenario();
+    const session = getOrCreateScenarioSession(sessionId, currentScenario.entryNode);
+    const node = getNode(currentScenario, session.nodeId);
+    return {
+      nodeId: session.nodeId,
+      version: session.version,
+      inputPaused: session.inputPaused,
+      acceptsPatientInput:
+        !session.inputPaused &&
+        (node?.advance || []).some(
+          (entry) => entry.type === "patient_any" || entry.type === "patient_intent"
+        )
+    };
+  }
+
   function getSessionState(sessionId) {
     const currentScenario = resolveScenario();
     const session = getOrCreateScenarioSession(sessionId, currentScenario.entryNode);
     const node = getNode(currentScenario, session.nodeId);
 
     return {
+      ...getInputState(sessionId),
       sessionId: session.sessionId,
       scenarioId: currentScenario.id,
       nodeId: session.nodeId,
@@ -72,9 +89,32 @@ export function createScenarioEngine({ scenario = null } = {}) {
     };
   }
 
-  async function handlePatientUtterance(sessionId, text, { revision = false, signal } = {}) {
+  async function handlePatientUtterance(
+    sessionId,
+    text,
+    { revision = false, expectedVersion, signal } = {}
+  ) {
     const currentScenario = resolveScenario();
     const session = getOrCreateScenarioSession(sessionId, currentScenario.entryNode);
+    const noSpeech = (kind) => ({
+      kind,
+      deviation: null,
+      nodeId: session.nodeId,
+      scene: getNode(currentScenario, session.nodeId)?.scene ?? null,
+      intent: null,
+      lines: [],
+      state: getInputState(sessionId)
+    });
+
+    signal?.throwIfAborted();
+    if (
+      expectedVersion !== undefined &&
+      expectedVersion !== session.version &&
+      !(revision && session.lastPatientMove?.fromVersion === expectedVersion)
+    ) {
+      return noSpeech("superseded");
+    }
+    if (session.inputPaused) return noSpeech("ignored");
 
     // ASRが出す句読点だけ・一音だけの断片では進行させない(発話もしない)。
     // patient_anyノードをこれで通すと台本が勝手に進んでしまう。
@@ -84,14 +124,7 @@ export function createScenarioEngine({ scenario = null } = {}) {
         JSON.stringify({ sessionId: session.sessionId, nodeId: session.nodeId, text })
       );
 
-      return {
-        kind: "ignored",
-        deviation: null,
-        nodeId: session.nodeId,
-        scene: getNode(currentScenario, session.nodeId)?.scene ?? null,
-        intent: null,
-        lines: []
-      };
+      return noSpeech("ignored");
     }
 
     // 発話の言い直し(途切れた発話の結合再送)の場合、直前の患者遷移を取り消してから
@@ -104,6 +137,9 @@ export function createScenarioEngine({ scenario = null } = {}) {
           "[scenario] revision_rewind",
           JSON.stringify({ sessionId: session.sessionId, nodeId: session.nodeId })
         );
+      } else {
+        // オペレーター操作後や期限切れの言い直しを、新規発話として進行させない。
+        return noSpeech("superseded");
       }
     }
 
@@ -121,6 +157,7 @@ export function createScenarioEngine({ scenario = null } = {}) {
         nodeId: node.id,
         scene: node.scene,
         intent: null,
+        state: getInputState(sessionId),
         lines: buildDeviationLines("closed", node, currentScenario)
       };
     }
@@ -129,7 +166,7 @@ export function createScenarioEngine({ scenario = null } = {}) {
 
     if (anyEntry) {
       const { lines, nodeId } = collectLinesFrom(currentScenario, anyEntry.next);
-      moveScenarioSession(session, nodeId, "patient_any");
+      moveScenarioSession(session, nodeId, "patient_any", lines);
 
       return {
         kind: "advance",
@@ -137,6 +174,7 @@ export function createScenarioEngine({ scenario = null } = {}) {
         nodeId,
         scene: getNode(currentScenario, nodeId)?.scene ?? null,
         intent: null,
+        state: getInputState(sessionId),
         lines
       };
     }
@@ -144,6 +182,7 @@ export function createScenarioEngine({ scenario = null } = {}) {
     const intentEntries = getAdvanceEntries(node, "patient_intent");
 
     if (intentEntries.length > 0) {
+      const version = session.version;
       const match = await matchIntent(text, intentEntries, {
         doctorLine: node.doctorLines.at(-1) || "",
         signal
@@ -151,7 +190,8 @@ export function createScenarioEngine({ scenario = null } = {}) {
 
       // LLM分類の待機中にoperator操作(次へ/分岐/ジャンプ等)で状態が動いた場合は、
       // 古い判定結果を捨てて何も発話しない(operator操作を上書きしない)。
-      if (session.nodeId !== node.id) {
+      signal?.throwIfAborted();
+      if (session.version !== version) {
         console.warn(
           "[scenario] utterance_superseded",
           JSON.stringify({
@@ -161,19 +201,12 @@ export function createScenarioEngine({ scenario = null } = {}) {
           })
         );
 
-        return {
-          kind: "superseded",
-          deviation: null,
-          nodeId: session.nodeId,
-          scene: getNode(currentScenario, session.nodeId)?.scene ?? null,
-          intent: null,
-          lines: []
-        };
+        return noSpeech("superseded");
       }
 
       if (match) {
         const { lines, nodeId } = collectLinesFrom(currentScenario, match.next);
-        moveScenarioSession(session, nodeId, `intent:${match.intent}`);
+        moveScenarioSession(session, nodeId, `intent:${match.intent}`, lines);
 
         return {
           kind: "advance",
@@ -183,11 +216,13 @@ export function createScenarioEngine({ scenario = null } = {}) {
           intent: match.intent,
           intentMethod: match.method,
           matchedKeywords: match.matchedKeywords,
+          state: getInputState(sessionId),
           lines
         };
       }
 
       const category = classifyDeviation(text);
+      session.lastPatientMove = { fromNodeId: node.id, fromVersion: version, at: Date.now() };
 
       return {
         kind: "deviation",
@@ -195,6 +230,7 @@ export function createScenarioEngine({ scenario = null } = {}) {
         nodeId: node.id,
         scene: node.scene,
         intent: null,
+        state: getInputState(sessionId),
         lines: buildDeviationLines(category, node, currentScenario)
       };
     }
@@ -206,6 +242,7 @@ export function createScenarioEngine({ scenario = null } = {}) {
       nodeId: node.id,
       scene: node.scene,
       intent: null,
+      state: getInputState(sessionId),
       lines: buildDeviationLines("hold", node, currentScenario)
     };
   }
@@ -233,7 +270,7 @@ export function createScenarioEngine({ scenario = null } = {}) {
     }
 
     const { lines, nodeId } = collectLinesFrom(currentScenario, entry.next);
-    moveScenarioSession(session, nodeId, `operator:${branch}`);
+    moveScenarioSession(session, nodeId, `operator:${branch}`, lines);
 
     return {
       kind: "advance",
@@ -257,7 +294,7 @@ export function createScenarioEngine({ scenario = null } = {}) {
     }
 
     const { lines, nodeId } = collectLinesFrom(currentScenario, firstEntry.next);
-    moveScenarioSession(session, nodeId, "operator:force_next");
+    moveScenarioSession(session, nodeId, "operator:force_next", lines);
 
     return {
       kind: "advance",
@@ -279,7 +316,7 @@ export function createScenarioEngine({ scenario = null } = {}) {
     }
 
     const { lines, nodeId: finalNodeId } = collectLinesFrom(currentScenario, nodeId);
-    moveScenarioSession(session, finalNodeId, "operator:jump");
+    moveScenarioSession(session, finalNodeId, "operator:jump", lines);
 
     return {
       kind: "advance",
@@ -318,8 +355,22 @@ export function createScenarioEngine({ scenario = null } = {}) {
       kind: "say",
       nodeId: node.id,
       scene: node.scene ?? null,
-      lines: node.doctorLines
+      lines: !nodeId && session.lastSpeechLines.length ? session.lastSpeechLines : node.doctorLines
     };
+  }
+
+  function repeat(sessionId, nodeId) {
+    const result = getNodeLines(sessionId, nodeId);
+    const session = getOrCreateScenarioSession(sessionId, resolveScenario().entryNode);
+    moveScenarioSession(session, session.nodeId, "operator:say", result.lines);
+    return result;
+  }
+
+  function setInputPaused(sessionId, paused) {
+    const session = getOrCreateScenarioSession(sessionId, resolveScenario().entryNode);
+    session.inputPaused = paused;
+    moveScenarioSession(session, session.nodeId, "operator:input", session.lastSpeechLines);
+    return getInputState(sessionId);
   }
 
   // セッション再接続時に旧セッションの進行を新セッションへ引き継ぐ。
@@ -329,6 +380,7 @@ export function createScenarioEngine({ scenario = null } = {}) {
   }
 
   return {
+    getInputState,
     getSessionState,
     handlePatientUtterance,
     applyOperatorBranch,
@@ -336,6 +388,8 @@ export function createScenarioEngine({ scenario = null } = {}) {
     jumpTo,
     reset,
     getNodeLines,
+    repeat,
+    setInputPaused,
     adoptProgress
   };
 }

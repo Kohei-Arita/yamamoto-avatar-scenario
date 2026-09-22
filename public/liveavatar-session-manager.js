@@ -1,29 +1,34 @@
+import * as browserApi from "./liveavatar-browser-api.js";
 import {
-  bindDialogueSession,
-  connectLiveKitRoom,
-  createLiveAvatarSessionToken,
-  ensureMicrophoneAccess,
-  fetchLiveAvatarConfig,
-  respondWithDialogueStream,
-  subscribeDialogueEvents,
-  startLiveAvatarSession,
-  stopLiveAvatarSession
-} from "./liveavatar-browser-api.js";
-import { createLiveAvatarDataHandler } from "./liveavatar-session-events.js";
-import {
-  createSessionLockHeartbeat,
-  createTrackAttacher,
-  disconnectRoom,
-  initializeSelfControlledConversation,
-  startOpeningGreeting,
-  stopLiveAvatarSessionSafely
-} from "./liveavatar-session-runtime.js";
+  createLiveAvatarDataHandler,
+  createSelfControlledSession
+} from "./liveavatar-session-events.js";
+import { createTrackAttacher, stopLiveAvatarSessionSafely } from "./liveavatar-session-runtime.js";
 import {
   createChromaKeyController,
   createSessionStartLock,
   createSubtitleController,
   resetRemoteMediaElements
 } from "./liveavatar-session-ui.js";
+
+function waitFor(promise, ms, signal, message) {
+  return new Promise((resolve, reject) => {
+    const finish = (error, value) => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+      if (error) reject(error);
+      else resolve(value);
+    };
+    const abort = () => finish(signal.reason);
+    const timer = setTimeout(() => finish(new Error(message)), ms);
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then(
+      (value) => finish(null, value),
+      (error) => finish(error)
+    );
+    if (signal.aborted) abort();
+  });
+}
 
 export function createSessionManager({
   LivekitClient,
@@ -37,59 +42,13 @@ export function createSessionManager({
   onAnswer = () => {},
   onAudioBlocked = () => {},
   onError = () => {},
-  onDisconnected = () => {}
+  onDisconnected = () => {},
+  api = browserApi
 }) {
   const { Room, RoomEvent, Track } = LivekitClient;
   const { remoteVideo, remoteCanvas, remoteAudio, videoPlaceholder, subtitleBox, chromaKeyToggle } =
     elements;
-
-  let room = null;
-  let sessionToken = null;
-  let started = false;
-  let currentSessionId = null;
-  let config = null;
-  let selfControlledConversation = null;
-  let dialogueEventSource = null;
-  let startPromise = null;
-  // stop()のたびに増える世代番号。start処理は各await後にこれを確認し、
-  // 処理中にstopが割り込んでいたら安全に中断する(半端な起動状態を防ぐ)。
-  let lifecycleEpoch = 0;
-  // アバターの音声トラックが届いた(=HeyGenエージェントが入室済み)ことを知らせる。
-  // これを待たずに挨拶のspeak_textを送ると、エージェント入室前でコマンドが失われ
-  // 開始挨拶が無音になることがある。
-  let notifyAvatarAudioReady = () => {};
-
-  const AVATAR_MEDIA_READY_TIMEOUT_MS = 10_000;
-  const AVATAR_MEDIA_READY_GRACE_MS = 400;
-
-  function createAvatarAudioReadyPromise() {
-    return new Promise((resolve) => {
-      notifyAvatarAudioReady = resolve;
-    });
-  }
-
-  async function waitForAvatarAudio(readyPromise) {
-    const ready = await Promise.race([
-      readyPromise.then(() => true),
-      new Promise((resolve) => {
-        setTimeout(() => resolve(false), AVATAR_MEDIA_READY_TIMEOUT_MS);
-      })
-    ]);
-
-    if (!ready) {
-      onLog("avatar audio track not detected before greeting (timeout, continuing)");
-      return;
-    }
-
-    // トラック公開直後はエージェント側のコマンド受信準備が整いきっていない
-    // ことがあるため、わずかに待ってから挨拶を送る。
-    await new Promise((resolve) => {
-      setTimeout(resolve, AVATAR_MEDIA_READY_GRACE_MS);
-    });
-  }
-
   const sessionStartLock = createSessionStartLock();
-  const sessionLockHeartbeat = createSessionLockHeartbeat(sessionStartLock);
   const subtitleController = createSubtitleController({ subtitleBox, showSubtitles });
   const chromaKeyController = createChromaKeyController({
     remoteVideo,
@@ -97,220 +56,283 @@ export function createSessionManager({
     containerElement: videoPlaceholder?.parentElement,
     options: chromaKeyOptions
   });
+  let config = null;
+  let activeRun = null;
+  let startPromise = null;
+  let lifecycleEpoch = 0;
 
   function updateChromaKey() {
     chromaKeyController.update(Boolean(chromaKeyToggle?.checked));
   }
 
-  const attachTrack = createTrackAttacher({
-    Track,
-    remoteVideo,
-    remoteAudio,
-    videoPlaceholder,
-    onVideoTrackAttached: updateChromaKey,
-    onAudioTrackAttached: () => notifyAvatarAudioReady(),
-    onAudioBlocked
-  });
-
-  const handleDataReceived = createLiveAvatarDataHandler({
-    getSelfControlledConversation: () => selfControlledConversation,
-    isSelfControlled: () => Boolean(config?.selfControlled),
-    subtitleController,
-    onUserTranscription: (text) => onLog(`user.transcription: ${text}`),
-    onAvatarSubtitle: verbose ? (text) => onLog(`avatar.subtitle: ${text}`) : undefined,
-    onSessionStopped: () => {
-      onLog("LiveAvatar session stopped");
-      stop().catch(onError);
+  // タイマー、SSE、会話、部屋は作成した世代に所有させる。旧接続の後処理で新接続を触らない。
+  function releaseRun(run) {
+    if (run.released) return;
+    run.released = true;
+    const wasCurrent = activeRun === run;
+    if (wasCurrent) {
+      activeRun = null;
+      lifecycleEpoch += 1;
     }
-  });
-
-  async function internalConnectRoom(livekitUrl, livekitToken) {
-    room = await connectLiveKitRoom({
-      Room,
-      RoomEvent,
-      livekitUrl,
-      livekitToken,
-      attachTrack,
-      onConnected: () => {
-        onConnectionStateChange("connected");
-        if (verbose) onLog("LiveKit connected");
-      },
-      onDisconnected: (reason) => {
-        onConnectionStateChange("disconnected");
-        if (verbose) onLog(`LiveKit disconnected ${reason || ""}`);
-        chromaKeyController.stop({ clearCanvas: true, showVideo: true });
-        room = null;
-        started = false;
-        onDisconnected();
-      },
-      onTrackSubscribed: verbose
-        ? (track, _pub, participant) =>
-            onLog(`Track subscribed: ${track.kind} from ${participant.identity}`)
-        : undefined,
-      onTrackUnsubscribed: verbose
-        ? (track) => onLog(`Track unsubscribed: ${track.kind}`)
-        : undefined,
-      onDataReceived: handleDataReceived,
-      onParticipantConnected: verbose
-        ? (participant) => onLog(`Participant connected: ${participant.identity}`)
-        : undefined,
-      onParticipantDisconnected: verbose
-        ? (participant) => onLog(`Participant disconnected: ${participant.identity}`)
-        : undefined
-    });
-
-    onMicStateChange("on");
-    if (verbose) onLog("Microphone enabled");
-  }
-
-  async function resetState() {
-    dialogueEventSource?.close();
-    dialogueEventSource = null;
-    selfControlledConversation?.reset();
-    selfControlledConversation = null;
-    currentSessionId = null;
+    run.abort.abort();
+    clearTimeout(run.heartbeat);
+    run.events?.close();
+    run.conversation?.dispose();
+    run.room?.disconnect()?.catch?.(onError);
+    if (!wasCurrent) return;
+    sessionStartLock.release();
     chromaKeyController.stop({ clearCanvas: true, showVideo: true });
-    sessionLockHeartbeat.stop();
-
-    if (room) {
-      await disconnectRoom(room);
-      room = null;
-    }
-
     resetRemoteMediaElements({ remoteVideo, remoteAudio, videoPlaceholder });
     subtitleController.clearNow();
-    onConnectionStateChange("idle");
     onMicStateChange("off");
-    started = false;
+    onConnectionStateChange("idle");
   }
 
-  async function stop() {
-    lifecycleEpoch += 1;
+  const stopRemote = (token) =>
+    stopLiveAvatarSessionSafely(token, api.stopLiveAvatarSession, {
+      onError: (error) => onLog(`Stop session warning: ${error.message}`)
+    });
 
-    try {
-      await stopLiveAvatarSessionSafely(sessionToken, stopLiveAvatarSession, {
-        onError: (error) => onLog(`Stop session warning: ${error.message}`)
-      });
-    } finally {
-      sessionToken = null;
-      sessionStartLock.release();
-      await resetState();
-    }
+  async function stop() {
+    const run = activeRun;
+    if (!run) return;
+    releaseRun(run);
+    await stopRemote(run.token);
   }
 
   async function loadConfig() {
-    config = await fetchLiveAvatarConfig();
+    config = await api.fetchLiveAvatarConfig();
     return config;
   }
 
-  async function start({ skipMicrophonePreflight = false } = {}) {
-    if (started) return;
+  function start({ skipMicrophonePreflight = false } = {}) {
     if (startPromise) return startPromise;
+    if (activeRun?.ready) return Promise.resolve();
+    if (!sessionStartLock.acquire())
+      return Promise.reject(new Error("別のタブでセッションが進行中です。"));
 
-    if (!sessionStartLock.acquire()) {
-      throw new Error("別のタブでセッションが進行中です。");
-    }
-
-    const epoch = lifecycleEpoch;
-
-    // start処理中にstop()が割り込んだ場合、以降の処理を中断して二重状態を防ぐ。
-    // (以前はstopがcurrentSessionIdをnullに戻した後もstartが続行し、
-    //  sessionIdなしでbind/SSE購読され、以降の対話が403で拒否される事故があった)
-    function ensureNotStopped() {
-      if (lifecycleEpoch !== epoch) {
-        throw new Error("セッション開始中に停止されました。もう一度Startしてください。");
-      }
-    }
+    const run = {
+      epoch: ++lifecycleEpoch,
+      abort: new AbortController(),
+      room: null,
+      token: null,
+      sessionId: null,
+      conversation: null,
+      events: null,
+      heartbeat: null,
+      ready: false,
+      released: false,
+      pendingSegments: [],
+      eventsConnected: false,
+      snapshot: null,
+      state: null
+    };
+    activeRun = run;
+    const signal = run.abort.signal;
+    const isCurrent = () => activeRun === run && lifecycleEpoch === run.epoch;
+    const ensureCurrent = () => {
+      signal.throwIfAborted();
+      if (!isCurrent()) throw new Error("セッション開始が中断されました。");
+    };
+    const disconnected = (reason) => {
+      if (!isCurrent()) return;
+      onLog(`LiveAvatar disconnected: ${reason || "unknown"}`);
+      releaseRun(run);
+      stopRemote(run.token).catch(onError);
+      onDisconnected(reason);
+    };
 
     startPromise = (async () => {
       onConnectionStateChange("starting");
-
       try {
-        if (!config) {
-          config = await fetchLiveAvatarConfig();
-          ensureNotStopped();
-        }
-
+        config = config || (await api.fetchLiveAvatarConfig({ signal }));
+        ensureCurrent();
         if (!skipMicrophonePreflight) {
-          await ensureMicrophoneAccess({
-            unsupportedMessage: "このブラウザではマイク取得 API が使えません。"
-          });
-          ensureNotStopped();
+          await waitFor(
+            api.ensureMicrophoneAccess(),
+            30_000,
+            signal,
+            "マイクへのアクセスが完了しませんでした。ブラウザの許可と音声機器を確認してください。"
+          );
+          ensureCurrent();
         }
+        // 発行要求は中断しない。Stopと競合しても返されたトークンを回収して停止する。
+        const token = await api.createLiveAvatarSessionToken();
+        run.token = token.session_token;
+        run.sessionId = token.session_id;
+        ensureCurrent();
+        if (!run.sessionId) throw new Error("LiveAvatarのセッションIDを取得できませんでした。");
+        const session = await api.startLiveAvatarSession(run.token, { signal });
+        ensureCurrent();
 
-        const tokenResponse = await createLiveAvatarSessionToken();
-        // 先にトークンを保持してからstop割り込みを確認する
-        // (中断時にcatch側のstop()が、作成済みセッションを確実に破棄できるように)
-        sessionToken = tokenResponse.session_token;
-        const startSessionId = tokenResponse.session_id || null;
-        currentSessionId = startSessionId;
-        ensureNotStopped();
-
-        if (!startSessionId) {
-          throw new Error("LiveAvatarのセッションIDを取得できませんでした。");
-        }
-
-        const session = await startLiveAvatarSession(sessionToken);
-        ensureNotStopped();
-
-        // 接続前にpromiseを作っておく(接続処理内のattachExistingTracksで即解決されうる)
-        const avatarAudioReady = createAvatarAudioReadyPromise();
-        await internalConnectRoom(session.livekit_url, session.livekit_token);
-        ensureNotStopped();
-
-        selfControlledConversation = initializeSelfControlledConversation({
-          getRoom: () => room,
-          // stop()でcurrentSessionIdがnullに戻っても影響を受けないよう、
-          // このstartで確定したsessionIdを固定値として使う。
-          getSessionId: () => startSessionId,
-          liveAvatarConfig: config,
-          respondWithDialogueStream,
-          subtitleController,
-          onLog,
-          onAnswer,
-          onError
+        let audioReady;
+        const audio = new Promise((resolve) => {
+          audioReady = resolve;
         });
-
-        sessionLockHeartbeat.start();
-        await bindDialogueSession(startSessionId);
-        ensureNotStopped();
-
-        dialogueEventSource = subscribeDialogueEvents(startSessionId, {
-          onSpeechSegment: (segment) => {
-            onLog(`operator.speech_segment: ${segment.speechText}`);
-            selfControlledConversation?.speakText(segment).catch(onError);
+        const attachTrack = createTrackAttacher({
+          Track,
+          remoteVideo,
+          remoteAudio,
+          videoPlaceholder,
+          onVideoTrackAttached: updateChromaKey,
+          onAudioTrackAttached: audioReady,
+          onAudioBlocked
+        });
+        const handleData = createLiveAvatarDataHandler({
+          getSelfControlledConversation: () => run.conversation,
+          onUserTranscription: (text) => onLog(`user.transcription: ${text}`),
+          onSessionStopped: (event) => disconnected(event.end_reason)
+        });
+        await api.connectLiveKitRoom({
+          Room,
+          RoomEvent,
+          livekitUrl: session.livekit_url,
+          livekitToken: session.livekit_token,
+          signal,
+          audioCaptureDefaults: { autoGainControl: Boolean(config.microphoneAutoGainControl) },
+          onRoomCreated: (room) => {
+            run.room = room;
+          },
+          attachTrack: (...args) => {
+            if (isCurrent()) attachTrack(...args);
+          },
+          onDataReceived: (...args) => {
+            if (isCurrent()) handleData(...args);
+          },
+          onDisconnected: disconnected
+        });
+        ensureCurrent();
+        run.conversation = createSelfControlledSession({
+          getRoom: () => run.room,
+          getSessionId: () => run.sessionId,
+          liveAvatarConfig: config,
+          respondWithDialogueStream: api.respondWithDialogueStream,
+          subtitleController,
+          microphoneInitiallyMuted: true,
+          onLog,
+          onError,
+          onMicStateChange,
+          onInputTimeout: async ({ expectedVersion }) => {
+            const result = await api.pauseDialogueInput(run.sessionId, expectedVersion, { signal });
+            if (!isCurrent() || !run.conversation.applyScenarioState(result.state)) return;
+            run.state = result.state;
+          },
+          onAnswer: (result) => {
+            if (!isCurrent()) return;
+            if (result?.state && result.state.version >= run.state?.version)
+              run.state = result.state;
+            onAnswer(result);
           }
         });
-
-        // アバターの音声トラック到着(=エージェント入室)を待ってから開始挨拶を送る。
-        await waitForAvatarAudio(avatarAudioReady);
-        ensureNotStopped();
-
-        await startOpeningGreeting({
-          liveAvatarConfig: config,
-          selfControlledConversation,
-          onError
+        run.conversation.setTransportReady(false);
+        const bound = await api.bindDialogueSession(run.sessionId, { signal });
+        ensureCurrent();
+        run.conversation.applyScenarioState(bound.state);
+        run.state = bound.state;
+        let eventsReady;
+        const events = new Promise((resolve) => {
+          eventsReady = resolve;
         });
-        ensureNotStopped();
+        run.events = api.subscribeDialogueEvents(run.sessionId, {
+          onState: (state) => {
+            if (!isCurrent()) return;
+            run.state = state;
+            run.conversation.applyScenarioState(state);
+          },
+          onConnectionChange: (connected, snapshot) => {
+            if (!isCurrent()) return;
+            run.eventsConnected = connected;
+            if (!connected) {
+              run.conversation.setTransportReady(false);
+              onLog("進行チャンネル再接続中: マイク入力を停止");
+              return;
+            }
+            const changed = snapshot.state.version !== run.state?.version;
+            run.state = snapshot.state;
+            run.snapshot = snapshot;
+            if (!run.ready) {
+              if (changed) run.pendingSegments = [];
+              eventsReady();
+            } else {
+              // SSE断中に届かなかった操作は、再接続時の現在台詞で追いつく。
+              if (changed) {
+                for (const [index, segment] of snapshot.openingSegments.entries()) {
+                  run.conversation
+                    .receiveOperatorSegment({
+                      ...segment,
+                      replace: index === 0,
+                      state: snapshot.state
+                    })
+                    .catch(onError);
+                }
+              }
+              run.conversation.applyScenarioState(snapshot.state);
+              run.conversation.setTransportReady(true);
+            }
+          },
+          onSpeechSegment: (segment) => {
+            if (!isCurrent()) return;
+            run.state = segment.state;
+            if (!run.ready) {
+              if (segment.replace) run.pendingSegments = [];
+              run.pendingSegments.push(segment);
+            } else {
+              run.conversation.receiveOperatorSegment(segment).catch(onError);
+            }
+          }
+        });
+        await Promise.all([
+          waitFor(events, 10_000, signal, "進行チャンネルに接続できませんでした。"),
+          waitFor(audio, 15_000, signal, "アバターの音声が届きませんでした。再接続してください。")
+        ]);
+        ensureCurrent();
+        await waitFor(
+          new Promise((resolve) => setTimeout(resolve, 400)),
+          1000,
+          signal,
+          "音声準備が完了しませんでした。"
+        );
+        ensureCurrent();
+        const snapshot = run.snapshot;
+        const opening = run.pendingSegments.length
+          ? run.pendingSegments
+          : (snapshot.state.version === bound.state.version
+              ? bound.openingSegments
+              : snapshot.openingSegments
+            ).map((segment) => ({ ...segment, state: snapshot.state }));
+        run.conversation.applyScenarioState(run.state);
+        run.ready = true;
+        await Promise.all(opening.map((segment) => run.conversation.speakText(segment)));
+        ensureCurrent();
+        run.conversation.setTransportReady(run.eventsConnected);
+        onConnectionStateChange("connected");
 
-        started = true;
+        const heartbeat = async () => {
+          if (!isCurrent()) return;
+          sessionStartLock.refresh();
+          try {
+            await api.keepLiveAvatarSessionAlive(run.sessionId, { signal });
+          } catch (error) {
+            if (isCurrent()) onLog(`keep-alive failed: ${error.message}`);
+          }
+          if (isCurrent()) run.heartbeat = setTimeout(heartbeat, 60_000);
+        };
+        run.heartbeat = setTimeout(heartbeat, 60_000);
+        if (verbose) onLog("LiveKit and scenario control connected");
       } catch (error) {
-        await stop();
+        releaseRun(run);
+        stopRemote(run.token).catch(onError);
         throw error;
       } finally {
         startPromise = null;
       }
     })();
-
     return startPromise;
   }
 
   function dispose() {
-    chromaKeyController.stop();
+    if (activeRun) releaseRun(activeRun);
     subtitleController.dispose();
-    sessionLockHeartbeat.stop();
-    sessionStartLock.release();
-    if (room) room.disconnect();
   }
 
   return {
@@ -320,7 +342,7 @@ export function createSessionManager({
     updateChromaKey,
     dispose,
     getConfig: () => config,
-    getSessionId: () => currentSessionId,
-    isStarted: () => started
+    getSessionId: () => activeRun?.sessionId || null,
+    isStarted: () => Boolean(activeRun?.ready)
   };
 }

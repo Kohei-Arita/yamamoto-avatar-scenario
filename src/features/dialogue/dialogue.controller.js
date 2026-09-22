@@ -1,7 +1,13 @@
-import { getDialogueLogs } from "./dialogue-log.store.js";
-import { subscribeDialogueEvents } from "./dialogue-events.js";
-import { isAllowedDialogueSession } from "./session-registry.js";
-import { answerUserText, bindDialogueSession, streamScenarioReply } from "./dialogue.service.js";
+import { appendDialogueLog, getDialogueLogs } from "./dialogue-log.store.js";
+import { broadcastScenarioState, subscribeDialogueEvents } from "./dialogue-events.js";
+import { isAllowedDialogueSession, isRegisteredSessionId } from "./session-registry.js";
+import { getScenarioEngine } from "../scenario/scenario-engine.js";
+import {
+  answerUserText,
+  bindDialogueSession,
+  streamScenarioReply,
+  toSpeechSegments
+} from "./dialogue.service.js";
 
 function writeSseEvent(res, event, payload) {
   res.write(`event: ${event}\n`);
@@ -18,6 +24,7 @@ function toSpeechSegmentPayload(segment) {
   }
 
   return {
+    state: segment?.state,
     text: segment?.speechText || "",
     speechText: segment?.speechText || "",
     subtitleText: segment?.subtitleText || segment?.speechText || ""
@@ -63,7 +70,40 @@ export function postBindDialogueSession(req, res) {
   const session = bindDialogueSession(sessionId);
   console.log("[dialogue] bind_session", JSON.stringify({ sessionId }));
 
-  return res.json({ ok: true, sessionId, messageCount: session.messageCount });
+  return res.json({ ok: true, ...session });
+}
+
+// 有効な文字起こしがないまま受付上限に達した会場画面から、入力停止だけを受け付ける。
+export function postInputTimeout(req, res) {
+  const { sessionId, expectedVersion } = req.body || {};
+  if (
+    typeof sessionId !== "string" ||
+    !sessionId ||
+    !Number.isInteger(expectedVersion) ||
+    expectedVersion < 0
+  ) {
+    return res.status(400).json({ ok: false, error: "sessionId and expectedVersion are required" });
+  }
+  if (!isRegisteredSessionId(sessionId)) {
+    return res.status(403).json({ ok: false, error: "Unknown session" });
+  }
+  const engine = getScenarioEngine();
+  const current = engine.getInputState(sessionId);
+  if (current.version !== expectedVersion) {
+    return res.status(409).json({ ok: false, error: "Scenario has changed", state: current });
+  }
+  if (!current.acceptsPatientInput) return res.json({ ok: true, state: current });
+
+  const state = engine.setInputPaused(sessionId, true);
+  appendDialogueLog({
+    sessionId,
+    kind: "input_timeout",
+    nodeId: state.nodeId,
+    reason: "no_transcript_within_30s"
+  });
+  broadcastScenarioState(sessionId, state);
+  console.log("[dialogue] input_timeout", JSON.stringify({ sessionId, nodeId: state.nodeId }));
+  return res.json({ ok: true, state });
 }
 
 export function getDialogueLogsController(req, res) {
@@ -79,7 +119,13 @@ export function getDialogueEventsController(req, res) {
   const { sessionId } = req.query;
 
   setSseHeaders(res);
-  subscribeDialogueEvents(sessionId, res);
+  const engine = getScenarioEngine();
+  subscribeDialogueEvents(
+    sessionId,
+    res,
+    engine.getInputState(sessionId),
+    toSpeechSegments(engine.getNodeLines(sessionId).lines.join("\n"))
+  );
   console.log("[dialogue] events_subscribed", JSON.stringify({ sessionId: sessionId || null }));
 }
 
@@ -128,7 +174,7 @@ export async function postRespondWithDialogue(req, res) {
 }
 
 export async function postRespondWithDialogueStream(req, res) {
-  const { sessionId, text, revision } = req.body || {};
+  const { sessionId, text, revision, expectedVersion } = req.body || {};
 
   if (!text || typeof text !== "string") {
     return res.status(400).json({ ok: false, error: "text is required" });
@@ -162,7 +208,8 @@ export async function postRespondWithDialogueStream(req, res) {
       {
         text,
         sessionId: sessionId || null,
-        revision: Boolean(revision)
+        revision: Boolean(revision),
+        expectedVersion
       },
       {
         signal: abortController.signal,
@@ -188,7 +235,8 @@ export async function postRespondWithDialogueStream(req, res) {
       writeSseEvent(res, "done", {
         ok: true,
         content: result.content,
-        speechContent: result.speechContent
+        speechContent: result.speechContent,
+        state: result.engineResult.state
       });
     }
 

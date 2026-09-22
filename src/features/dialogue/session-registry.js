@@ -7,6 +7,10 @@ const MAX_KNOWN_SESSIONS = 50;
 
 const knownSessionIds = new Set();
 
+export function isRegisteredSessionId(sessionId) {
+  return Boolean(sessionId) && knownSessionIds.has(sessionId);
+}
+
 export function registerKnownSessionId(sessionId) {
   if (!sessionId) {
     return;

@@ -30,6 +30,8 @@ services:
       # アバターが話し切るまで患者音声で割り込ませない(会場の雑音・回り込み対策)
       - key: LIVEAVATAR_ALLOW_INTERRUPT
         value: "false"
+      - key: LIVEAVATAR_MICROPHONE_AUTO_GAIN_CONTROL
+        value: "false"
       - key: LIVEAVATAR_ASSISTANT_NAME
         value: 山本
       - key: LIVEAVATAR_ASSISTANT_PERSONA
@@ -52,3 +54,5 @@ services:
         sync: false
       - key: DIALOGUE_LLM_TRANSCRIPT_NORMALIZATION_ENABLED
         value: "false"
+      - key: DIALOGUE_LLM_TIMEOUT_MS
+        value: "6000"

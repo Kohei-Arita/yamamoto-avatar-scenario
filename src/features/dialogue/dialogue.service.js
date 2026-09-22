@@ -70,11 +70,16 @@ export function toSpeechSegments(content) {
   return segments;
 }
 
-async function buildScenarioReply({ text, sessionId, revision = false } = {}, { signal } = {}) {
+async function buildScenarioReply(
+  { text, sessionId, revision = false, expectedVersion } = {},
+  { signal } = {}
+) {
   const startedAt = Date.now();
   const userText = String(text || "");
   const resolvedSessionId = resolveSessionId(sessionId);
   const engine = getScenarioEngine();
+  // 音声補正待ちの間のオペレーター操作も検出する。
+  const requestVersion = expectedVersion ?? engine.getInputState(resolvedSessionId).version;
 
   const historyMessages = getConversationMessages(resolvedSessionId);
   const ruleBasedTranscript = normalizeMedicalTranscript(userText, { historyMessages });
@@ -86,14 +91,23 @@ async function buildScenarioReply({ text, sessionId, revision = false } = {}, { 
   const engineResult = await engine.handlePatientUtterance(
     resolvedSessionId,
     transcript.normalizedText,
-    { revision, signal }
+    { revision, expectedVersion: requestVersion, signal }
   );
 
-  const {
+  let {
     text: content,
     paraphrased,
     fallbackReason
   } = await maybeParaphraseLines(engineResult.lines, { signal });
+
+  signal?.throwIfAborted();
+  const currentState = engine.getInputState(resolvedSessionId);
+  if (engineResult.state.version !== currentState.version) {
+    content = "";
+    engineResult.kind = "superseded";
+    engineResult.lines = [];
+    engineResult.state = currentState;
+  }
 
   appendDialogueLog({
     sessionId: resolvedSessionId,
@@ -143,7 +157,7 @@ export async function streamScenarioReply(
   const result = await buildScenarioReply(request, { signal });
 
   for (const segment of toSpeechSegments(result.content)) {
-    await onSpeechSegment(segment);
+    await onSpeechSegment({ ...segment, state: result.engineResult.state });
   }
 
   return result;
@@ -170,9 +184,16 @@ export function bindDialogueSession(sessionId) {
   bindDebugSession(sessionId, { source: "browser" });
   engine.getSessionState(sessionId);
 
-  return initializeConversationSession(sessionId, {
+  const conversation = initializeConversationSession(sessionId, {
     openingGreeting: env.liveAvatarOpeningGreeting || undefined
   });
+  const state = engine.getInputState(sessionId);
+  const lines = engine.getNodeLines(sessionId).lines;
+  const openingText =
+    state.version === 0 && env.liveAvatarOpeningGreeting
+      ? env.liveAvatarOpeningGreeting
+      : lines.join("\n");
+  return { ...conversation, state, openingSegments: toSpeechSegments(openingText) };
 }
 
 // operator操作(branch/next/jump/reset/say)の結果セリフを、
@@ -181,7 +202,8 @@ export function deliverOperatorSpeech(sessionId, engineResult, { action } = {}) 
   const resolvedSessionId = resolveSessionId(sessionId);
   const content = (engineResult.lines || []).join("\n");
   const segments = toSpeechSegments(content);
-  const subscriberCount = broadcastSpeechSegments(resolvedSessionId, segments);
+  const state = getScenarioEngine().getInputState(resolvedSessionId);
+  const subscriberCount = broadcastSpeechSegments(resolvedSessionId, segments, state);
 
   appendDialogueLog({
     sessionId: resolvedSessionId,

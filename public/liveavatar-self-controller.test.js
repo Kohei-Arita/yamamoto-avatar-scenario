@@ -1,7 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { EventEmitter } from "node:events";
 
-import { createSelfControlledConversation } from "./liveavatar-self-controller.js";
+import { createSelfControlledConversation as createConversation } from "./liveavatar-self-controller.js";
+
+const conversations = [];
+function createSelfControlledConversation(options) {
+  const conversation = createConversation(options);
+  conversations.push(conversation);
+  return conversation;
+}
+test.afterEach(() => {
+  for (const conversation of conversations.splice(0)) conversation.dispose();
+});
 
 function wait(ms) {
   return new Promise((resolve) => {
@@ -53,6 +64,49 @@ function createRoomWithPublishedEvents() {
   };
 }
 
+test("LiveAvatarの発話・中断コマンドには接頭辞なしのUUIDを送る", async () => {
+  const { room, publishedEvents } = createRoomWithPublishedEvents();
+  const conversation = createSelfControlledConversation({
+    getRoom: () => room,
+    getSessionId: () => "event-id-contract",
+    respondToTextStream: async () => ({ content: "" })
+  });
+  await conversation.speakText("音声の確認です。");
+  await conversation.interruptAvatar();
+
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  assert.deepEqual(
+    publishedEvents.map((event) => event.event_type),
+    ["avatar.speak_text", "avatar.interrupt"]
+  );
+  for (const event of publishedEvents) assert.match(event.event_id, uuid);
+  assert.equal(publishedEvents[0].event_id, publishedEvents[0].client_segment_id);
+  assert.notEqual(publishedEvents[0].event_id, publishedEvents[1].event_id);
+});
+
+test("対話通信の中断エラー後もマイクを解除して次の発話を受け付ける", async () => {
+  const { room, micEnabledCalls } = createRoomWithPublishedEvents();
+  const calls = [];
+  const conversation = createSelfControlledConversation({
+    getRoom: () => room,
+    getSessionId: () => "abort-recovery",
+    debounceMs: 5,
+    respondToTextStream: async ({ text }) => {
+      calls.push(text);
+      throw new DOMException("cancelled", "AbortError");
+    }
+  });
+  conversation.handleAgentResponseEvent({ event_type: "user.transcription", text: "はい。" });
+  await wait(20);
+  conversation.handleAgentResponseEvent({
+    event_type: "user.transcription",
+    text: "特にありません。"
+  });
+  await wait(20);
+  assert.deepEqual(calls, ["はい。", "特にありません。"]);
+  assert.deepEqual(micEnabledCalls, [false, true, false, true]);
+});
+
 test("buffers adjacent transcription fragments into one final utterance", async () => {
   const calls = [];
   const conversation = createSelfControlledConversation({
@@ -89,6 +143,7 @@ test("rebuilds the utterance when a short continuation arrives after finalizatio
     getSessionId: () => "session-2",
     debounceMs: 20,
     continuationWindowMs: 120,
+    allowInterrupt: true,
     respondToTextStream: createAbortableResponder(calls),
     onLog: (message) => logs.push(message)
   });
@@ -193,6 +248,7 @@ test("does not merge a new utterance when the previous final already ended with 
     getSessionId: () => "session-3",
     debounceMs: 20,
     continuationWindowMs: 120,
+    allowInterrupt: true,
     respondToTextStream: createAbortableResponder(calls)
   });
 
@@ -242,8 +298,130 @@ test("waits for local microphone speech to stop before finalizing", async () => 
 
   room.localParticipant.isSpeaking = false;
 
-  await wait(30);
+  // falseを観測した後もdebounceMsの静かな状態を確認する。
+  await wait(55);
   assert.deepEqual(calls, ["長い質問の途中"]);
+});
+
+function turnFixture(t, { allowInterrupt = false } = {}) {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"] });
+  const { room, publishedEvents, micEnabledCalls } = createRoomWithPublishedEvents();
+  room.localParticipant = Object.assign(new EventEmitter(), room.localParticipant);
+  const requests = [];
+  const timeouts = [];
+  const conversation = createSelfControlledConversation({
+    getRoom: () => room,
+    getSessionId: () => "bounded-user-turn",
+    allowInterrupt,
+    onInputTimeout: async (request) => timeouts.push(request),
+    respondToTextStream: async ({ text, revision, onSpeechSegment }) => {
+      requests.push({ text, revision });
+      await onSpeechSegment({ speechText: "確認しました。" });
+      return {};
+    }
+  });
+  conversation.applyScenarioState({ version: 0, acceptsPatientInput: true });
+  return {
+    conversation,
+    room,
+    publishedEvents,
+    micEnabledCalls,
+    requests,
+    timeouts,
+    event: (event_type, text) => conversation.handleAgentResponseEvent({ event_type, text }),
+    tick: (ms) => t.mock.timers.tick(ms)
+  };
+}
+
+test("途中の句点で進まず、発話終了後に前半と後半をまとめて一度だけ返答する", (t) => {
+  const { event, tick, requests, micEnabledCalls } = turnFixture(t);
+  event("user.speak_started");
+  event("user.transcription", "特にないんですけどね。");
+  tick(2500);
+  event("user.transcription", "ただ最近は階段で息切れがして。");
+  tick(2500);
+  assert.deepEqual(requests, []);
+  assert.deepEqual(micEnabledCalls, []);
+  event("user.speak_ended");
+  tick(1200);
+  assert.deepEqual(requests, [
+    { text: "特にないんですけどね。ただ最近は階段で息切れがして。", revision: false }
+  ]);
+  assert.deepEqual(micEnabledCalls, [false]);
+});
+
+test("30秒で届いた分だけ返答し、割り込み許可中でも後続を遮断する", async (t) => {
+  const { conversation, event, tick, requests, micEnabledCalls, publishedEvents, timeouts } =
+    turnFixture(t, { allowInterrupt: true });
+  event("user.speak_started");
+  tick(20_000);
+  event("user.transcription", "ここまでの話です。");
+  tick(9999);
+  assert.deepEqual(requests, []);
+  tick(1);
+  event("user.transcription", "締め切り後の続きです。");
+  assert.deepEqual(requests, [{ text: "ここまでの話です。", revision: false }]);
+  assert.deepEqual(timeouts, []);
+  assert.deepEqual(micEnabledCalls, [false]);
+  // 応答生成と発話キューへの送信を完了させてから、実際の発話終了を通知する。
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+  const source = publishedEvents[0].event_id;
+  for (const event_type of ["avatar.speak_started", "avatar.speak_ended"]) {
+    conversation.handleAgentResponseEvent({ event_type, source_event_id: source });
+  }
+  assert.deepEqual(micEnabledCalls, [false, true]);
+});
+
+test("タイマー実行前でも30秒を過ぎた文字起こしは今回の回答に入れない", (t) => {
+  const { event, requests } = turnFixture(t);
+  event("user.speak_started");
+  event("user.transcription", "期限内の内容です。");
+  t.mock.timers.setTime(Date.now() + 30_001);
+  event("user.transcription", "期限後の内容です。");
+  assert.deepEqual(requests, [{ text: "期限内の内容です。", revision: false }]);
+});
+
+test("雑音だけが30秒続いたら進行させず停止し、操作係の再開まで待つ", (t) => {
+  const { conversation, room, event, tick, requests, timeouts, micEnabledCalls } = turnFixture(t);
+  room.localParticipant.isSpeaking = true;
+  room.localParticipant.emit("isSpeakingChanged", true);
+  event("user.transcription", "。");
+  tick(30_000);
+  assert.deepEqual(requests, []);
+  assert.deepEqual(timeouts, [{ expectedVersion: 0 }]);
+  assert.deepEqual(micEnabledCalls, [false]);
+  event("user.transcription", "はい。");
+  tick(60_000);
+  assert.deepEqual(requests, []);
+  assert.equal(timeouts.length, 1);
+  // 同じ状態の再配信では自動解除しない。
+  conversation.applyScenarioState({ version: 0, acceptsPatientInput: true });
+  assert.deepEqual(micEnabledCalls, [false]);
+  conversation.applyScenarioState({ version: 1, acceptsPatientInput: false, inputPaused: true });
+  room.localParticipant.isSpeaking = false;
+  conversation.applyScenarioState({ version: 2, acceptsPatientInput: true, inputPaused: false });
+  event("user.transcription", "はい。");
+  tick(1200);
+  assert.deepEqual(requests, [{ text: "はい。", revision: false }]);
+});
+
+test("入力停止と破棄で受付期限・発話監視を解除し、古いタイマーで操作を上書きしない", (t) => {
+  const { conversation, room, event, tick, requests, timeouts } = turnFixture(t);
+  event("user.speak_started");
+  event("user.transcription", "回答の途中です。");
+  tick(29_000);
+  conversation.setTransportReady(false);
+  tick(2000);
+  assert.deepEqual(requests, []);
+  assert.deepEqual(timeouts, []);
+  conversation.setTransportReady(true);
+  event("user.transcription", "うん。");
+  tick(1200);
+  assert.deepEqual(requests, [{ text: "うん。", revision: false }]);
+  conversation.dispose();
+  assert.equal(room.localParticipant.listenerCount("isSpeakingChanged"), 0);
+  tick(30_000);
+  assert.deepEqual(timeouts, []);
 });
 
 test("matches avatar lifecycle events by echoed client ids before advancing the queue", async () => {
@@ -414,7 +592,9 @@ test("アバター発話のエコー(回り込み文字起こし)を患者発話
   await wait(60);
   assert.deepEqual(calls, []);
 
-  // 本物の患者発話は通る
+  // 発話が終われば、本物の患者発話は通る。
+  conversation.handleAgentResponseEvent({ event_type: "avatar.speak_started" });
+  conversation.handleAgentResponseEvent({ event_type: "avatar.speak_ended" });
   conversation.handleAgentResponseEvent({
     event_type: "user.transcription",
     text: "特にありません"
@@ -429,6 +609,7 @@ test("継続発話の結合再送にはrevisionフラグが付く", async () => 
   const conversation = createSelfControlledConversation({
     getRoom: () => null,
     getSessionId: () => "session-revision",
+    allowInterrupt: true,
     debounceMs: 20,
     continuationWindowMs: 120,
     respondToTextStream: async ({ text, revision, signal }) => {
@@ -831,4 +1012,158 @@ test("マイクのミュート要求が連続しても実状態が反転しな�
   await wait(0);
 
   conversation.reset();
+});
+
+test("患者の発話終了通知はアバターの発話キューを進めない", async () => {
+  const { room, publishedEvents } = createRoomWithPublishedEvents();
+  const conversation = createSelfControlledConversation({
+    getRoom: () => room,
+    getSessionId: () => "user-end",
+    respondToTextStream: async () => ({})
+  });
+  await conversation.speakText("一文目です。");
+  await conversation.speakText("二文目です。");
+  conversation.handleAgentResponseEvent({
+    event_type: "avatar.speak_started",
+    source_event_id: publishedEvents[0].event_id
+  });
+  conversation.handleAgentResponseEvent({ event_type: "user.speak_ended" });
+  await wait(0);
+  assert.equal(publishedEvents.length, 1);
+  conversation.handleAgentResponseEvent({
+    event_type: "avatar.speak_ended",
+    source_event_id: publishedEvents[0].event_id
+  });
+  await wait(0);
+  assert.equal(publishedEvents[1].text, "二文目です。");
+});
+
+test("publishData完了より早い発話開始通知も受け付ける", async () => {
+  const { room, publishedEvents, micEnabledCalls } = createRoomWithPublishedEvents();
+  let conversation;
+  room.localParticipant.publishData = async (bytes) => {
+    const event = JSON.parse(new TextDecoder().decode(bytes));
+    publishedEvents.push(event);
+    conversation.handleAgentResponseEvent({
+      event_type: "avatar.speak_started",
+      source_event_id: event.event_id
+    });
+  };
+  conversation = createSelfControlledConversation({
+    getRoom: () => room,
+    getSessionId: () => "early-start",
+    respondToTextStream: async () => ({})
+  });
+  await conversation.speakText("早い応答です。");
+  conversation.handleAgentResponseEvent({
+    event_type: "avatar.speak_ended",
+    source_event_id: publishedEvents[0].event_id
+  });
+  await wait(0);
+  assert.deepEqual(micEnabledCalls, [false, true]);
+});
+
+test("投票・入力停止・進行チャンネル断の間はマイクと文字起こしの両方を閉じる", async () => {
+  const { room, micEnabledCalls } = createRoomWithPublishedEvents();
+  const calls = [];
+  const conversation = createSelfControlledConversation({
+    getRoom: () => room,
+    getSessionId: () => "input-gate",
+    debounceMs: 5,
+    respondToTextStream: async ({ text }) => {
+      calls.push(text);
+      return {};
+    }
+  });
+  conversation.applyScenarioState({ version: 1, acceptsPatientInput: false });
+  conversation.handleAgentResponseEvent({
+    event_type: "user.transcription",
+    text: "ありがとうございます"
+  });
+  await wait(15);
+  assert.deepEqual(calls, []);
+  assert.deepEqual(micEnabledCalls, [false]);
+  conversation.applyScenarioState({ version: 2, acceptsPatientInput: true });
+  await wait(0);
+  conversation.setTransportReady(false);
+  conversation.handleAgentResponseEvent({ event_type: "user.transcription", text: "司会の声です" });
+  await wait(15);
+  assert.deepEqual(calls, []);
+  conversation.setTransportReady(true);
+  conversation.handleAgentResponseEvent({ event_type: "user.transcription", text: "はい" });
+  await wait(15);
+  assert.deepEqual(calls, ["はい"]);
+});
+
+test("オペレーター発話は古いキューと未確定の患者発話を置き換える", async () => {
+  const { room, publishedEvents } = createRoomWithPublishedEvents();
+  const calls = [];
+  const conversation = createSelfControlledConversation({
+    getRoom: () => room,
+    getSessionId: () => "replace",
+    debounceMs: 10,
+    interruptGraceMs: 1,
+    respondToTextStream: async ({ text }) => {
+      calls.push(text);
+      return {};
+    }
+  });
+  conversation.handleAgentResponseEvent({ event_type: "user.transcription", text: "古い患者発話" });
+  await conversation.speakText("古い一文目です。");
+  await conversation.speakText("古い二文目です。");
+  await conversation.receiveOperatorSegment({
+    replace: true,
+    state: { version: 2, acceptsPatientInput: true },
+    speechText: "ジャンプ先です。"
+  });
+  await wait(20);
+  assert.deepEqual(calls, []);
+  assert.deepEqual(
+    publishedEvents.filter((e) => e.event_type === "avatar.speak_text").map((e) => e.text),
+    ["古い一文目です。", "ジャンプ先です。"]
+  );
+  conversation.handleAgentResponseEvent({
+    event_type: "avatar.speak_ended",
+    source_event_id: publishedEvents[0].event_id
+  });
+  await conversation.receiveOperatorSegment({
+    state: { version: 1 },
+    speechText: "遅着した古い文です。"
+  });
+  assert.equal(publishedEvents.filter((e) => e.event_type === "avatar.speak_text").length, 2);
+});
+
+test("切断後に古いpublishDataが完了しても再送タイマーを作らない", async () => {
+  const { room, publishedEvents } = createRoomWithPublishedEvents();
+  let finishPublish;
+  room.localParticipant.publishData = async (bytes) => {
+    publishedEvents.push(JSON.parse(new TextDecoder().decode(bytes)));
+    await new Promise((resolve) => {
+      finishPublish = resolve;
+    });
+  };
+  const conversation = createSelfControlledConversation({
+    getRoom: () => room,
+    getSessionId: () => "disposed",
+    speakStartTimeoutMs: 5,
+    respondToTextStream: async () => ({})
+  });
+  const speaking = conversation.speakText("切断される文です。");
+  conversation.dispose();
+  finishPublish();
+  await speaking;
+  await wait(20);
+  assert.equal(publishedEvents.length, 1);
+});
+
+test("割り込みを明示的に許可した場合は応答中もマイクを閉じない", async () => {
+  const { room, micEnabledCalls } = createRoomWithPublishedEvents();
+  const conversation = createSelfControlledConversation({
+    getRoom: () => room,
+    getSessionId: () => "interrupt-enabled",
+    allowInterrupt: true,
+    respondToTextStream: async () => ({})
+  });
+  await conversation.speakText("割り込み可能な文です。");
+  assert.deepEqual(micEnabledCalls, []);
 });

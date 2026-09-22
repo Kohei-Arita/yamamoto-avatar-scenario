@@ -84,7 +84,7 @@ export function buildParaphraseMessages(lines) {
 }
 
 export async function maybeParaphraseLines(lines, { signal } = {}) {
-  if (env.scenarioSpeechMode !== "paraphrase" || !env.openAiApiKey) {
+  if (!lines.length || env.scenarioSpeechMode !== "paraphrase" || !env.openAiApiKey) {
     return { text: lines.join("\n"), paraphrased: false, fallbackReason: null };
   }
 

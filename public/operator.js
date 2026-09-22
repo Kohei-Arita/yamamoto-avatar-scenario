@@ -15,6 +15,9 @@ const jumpSelect = document.getElementById("jumpSelect");
 const jumpBtn = document.getElementById("jumpBtn");
 const actionResult = document.getElementById("actionResult");
 const logList = document.getElementById("logList");
+const inputBtn = document.getElementById("inputBtn");
+const stateInput = document.getElementById("stateInput");
+const stateConnection = document.getElementById("stateConnection");
 
 const POLL_INTERVAL_MS = 1500;
 const BRANCH_LABELS = { A: "A", B: "B", C: "C" };
@@ -22,6 +25,17 @@ const BRANCH_LABELS = { A: "A", B: "B", C: "C" };
 let token = sessionStorage.getItem("operatorToken") || "";
 let pollTimer = null;
 let knownNodeIds = [];
+let currentState = null;
+let actionBusy = false;
+
+function updateActionButtons() {
+  document
+    .querySelectorAll(".operator-actions button, .operator-branches button, #jumpBtn")
+    .forEach((button) => {
+      button.disabled = actionBusy || !currentState;
+    });
+}
+updateActionButtons();
 
 function authHeaders(extra = {}) {
   return {
@@ -32,6 +46,7 @@ function authHeaders(extra = {}) {
 
 async function api(path, { method = "GET", body } = {}) {
   const response = await fetch(path, {
+    signal: AbortSignal.timeout(8000),
     method,
     headers: authHeaders(body !== undefined ? { "content-type": "application/json" } : {}),
     body: body !== undefined ? JSON.stringify(body) : undefined
@@ -39,11 +54,13 @@ async function api(path, { method = "GET", body } = {}) {
   const data = await response.json().catch(() => ({}));
 
   if (response.status === 401) {
-    throw new Error("認証エラー: トークンが正しくありません");
+    throw Object.assign(new Error("認証エラー: トークンが正しくありません"), { status: 401 });
   }
 
   if (response.status === 503) {
-    throw new Error("サーバーに OPERATOR_TOKEN が設定されていません");
+    throw Object.assign(new Error("サーバーに OPERATOR_TOKEN が設定されていません"), {
+      status: 503
+    });
   }
 
   if (!response.ok || data?.ok === false) {
@@ -101,8 +118,12 @@ function renderLogs(logs = []) {
       ? ` intent=${escapeHtml(log.intent)}(${escapeHtml(log.intentMethod || "?")})`
       : "";
     const patient = log.userText ? `<div>患者: ${escapeHtml(log.userText)}</div>` : "";
+    const result =
+      log.kind === "input_timeout"
+        ? "<div>30秒以内に聞き取れる内容がなく、音声入力を停止しました。入力を再開して同じ質問から続けられます。</div>"
+        : `<div>山本: ${escapeHtml(log.answerPreview || "")}</div>`;
 
-    entry.innerHTML = `<div class="meta">${time} ${escapeHtml(log.kind || "")} node=${escapeHtml(log.nodeId || "-")}${intent}${deviation}</div>${patient}<div>山本: ${escapeHtml(log.answerPreview || "")}</div>`;
+    entry.innerHTML = `<div class="meta">${time} ${escapeHtml(log.kind || "")} node=${escapeHtml(log.nodeId || "-")}${intent}${deviation}</div>${patient}${result}`;
     logList.appendChild(entry);
   }
 }
@@ -125,6 +146,15 @@ function renderJumpOptions(nodeIds) {
 
 function renderState(data) {
   const state = data.state || {};
+  if (state.sessionId === currentState?.sessionId && state.version < currentState.version) return;
+  currentState = state;
+  stateConnection.textContent = data.avatarConnected ? "接続中" : "未接続（台詞を送信できません）";
+  stateInput.textContent = state.inputPaused
+    ? "停止中（操作係の再開待ち）"
+    : state.acceptsPatientInput
+      ? "患者の返答を受付（アバター発話中はミュート）"
+      : "自動停止中（Voting待機・終了）";
+  inputBtn.textContent = state.inputPaused ? "音声入力を再開" : "音声入力を停止";
   const logs = data.logs || [];
 
   stateSession.textContent = state.sessionId || "-";
@@ -148,16 +178,18 @@ function renderState(data) {
   renderLogs(logs);
 
   renderJumpOptions(state.allNodeIds || []);
+  updateActionButtons();
 }
 
 async function refresh() {
+  if (actionBusy) return;
   try {
     const data = await api("/api/operator/state");
     authState.textContent = "接続中";
     renderState(data);
   } catch (error) {
-    authState.textContent = error.message;
-    stopPolling();
+    authState.textContent = `再接続待ち: ${error.message}`;
+    if (error.status === 401 || error.status === 503) stopPolling();
   }
 }
 
@@ -175,19 +207,42 @@ function stopPolling() {
 }
 
 async function runAction(action, body = {}) {
+  if (actionBusy || !currentState) return;
+  actionBusy = true;
+  updateActionButtons();
   try {
     actionResult.textContent = "実行中...";
     const path = `/api/operator/${action}`;
-    const data = await api(path, { method: "POST", body });
+    const data = await api(path, {
+      method: "POST",
+      body: {
+        ...body,
+        sessionId: currentState.sessionId,
+        expectedVersion: currentState.version
+      }
+    });
     const delivery = data.delivery || {};
-    actionResult.textContent = delivery.delivered
-      ? `送信しました（${delivery.segmentCount}セグメント）`
-      : "状態は更新しましたが、接続中のアバター画面がありません";
+    actionResult.textContent =
+      action === "input"
+        ? data.state.inputPaused
+          ? "音声入力を停止しました"
+          : "音声入力を再開しました"
+        : delivery.delivered
+          ? `送信しました（${delivery.segmentCount}セグメント）`
+          : "状態は更新しましたが、接続中のアバター画面がありません";
     renderState(data);
   } catch (error) {
     actionResult.textContent = `エラー: ${error.message}`;
+  } finally {
+    actionBusy = false;
+    updateActionButtons();
+    refresh();
   }
 }
+
+inputBtn.addEventListener("click", () =>
+  runAction("input", { paused: !currentState?.inputPaused })
+);
 
 connectBtn.addEventListener("click", () => {
   token = tokenInput.value.trim();

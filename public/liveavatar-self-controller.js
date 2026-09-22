@@ -1,77 +1,21 @@
 import { isAvatarSubtitleEndEvent, normalizeSubtitleText } from "./liveavatar-subtitles.js";
+import { createMicrophoneController } from "./microphone-controller.js";
 import { createEchoGuard } from "./transcript-echo-guard.js";
 import { isSubstantiveTranscript } from "./transcript-filter.js";
+import { createUserTurnDetector, MAX_USER_TURN_MS } from "./user-turn-detector.js";
 
 const AGENT_CONTROL_TOPIC = "agent-control";
-const EVENT_META_NESTED_KEYS = ["data", "payload", "message", "detail", "result", "metadata"];
 
 function normalizeTranscript(parts) {
   return normalizeSubtitleText(parts.join(""));
 }
 
-function createClientId(prefix) {
-  if (globalThis.crypto?.randomUUID) {
-    return `${prefix}-${globalThis.crypto.randomUUID()}`;
-  }
-
-  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function normalizeMetaValue(value) {
-  const normalized = String(value || "").trim();
-  return normalized || "";
-}
-
-function pickNestedMetaValue(source, candidateKeys, seen = new Set()) {
-  if (!source || typeof source !== "object") {
-    return "";
-  }
-
-  if (seen.has(source)) {
-    return "";
-  }
-
-  seen.add(source);
-
-  for (const key of candidateKeys) {
-    const value = normalizeMetaValue(source[key]);
-
-    if (value) {
-      return value;
-    }
-  }
-
-  for (const key of EVENT_META_NESTED_KEYS) {
-    const nestedValue = pickNestedMetaValue(source[key], candidateKeys, seen);
-
-    if (nestedValue) {
-      return nestedValue;
-    }
-  }
-
-  return "";
-}
-
+// LiveAvatarのsource_event_idを優先。旧クライアントID付きイベントも受け付ける。
 function extractEventGenerationMeta(event) {
   return {
-    responseId: pickNestedMetaValue(event, [
-      "client_response_id",
-      "clientResponseId",
-      "response_id",
-      "responseId"
-    ]),
-    generationId: pickNestedMetaValue(event, [
-      "client_generation_id",
-      "clientGenerationId",
-      "generation_id",
-      "generationId"
-    ]),
-    segmentId: pickNestedMetaValue(event, [
-      "client_segment_id",
-      "clientSegmentId",
-      "segment_id",
-      "segmentId"
-    ])
+    responseId: String(event.client_response_id ?? ""),
+    generationId: String(event.client_generation_id ?? ""),
+    segmentId: String(event.source_event_id || event.client_segment_id || "")
   };
 }
 
@@ -118,8 +62,10 @@ export function createSelfControlledConversation({
   // 断片が継続時間内に届き続けた場合、結合が際限なく伸び続けてしまう。
   maxContinuationChainLength = 5,
   flushPollMs = 250,
+  maxUserTurnMs = MAX_USER_TURN_MS,
   interruptGraceMs = 250,
-  allowInterrupt = true,
+  allowInterrupt = false,
+  microphoneInitiallyMuted = false,
   // speak_started / speak_ended イベントの取りこぼしで発話キューが
   // 永久停止しないための保険(ウォッチドッグ)のタイムアウト設定。
   speakStartTimeoutMs = 6000,
@@ -136,11 +82,12 @@ export function createSelfControlledConversation({
   onSpeechStart = () => {},
   onSpeechIdle = () => {},
   onSpeechReset = () => {},
-  onError = () => {}
+  onError = () => {},
+  onInputTimeout = async () => {},
+  onMicStateChange = () => {}
 }) {
   let bufferedTranscripts = [];
   let bufferIsRevision = false;
-  let flushTimer = null;
   let generationId = 0;
   let isGenerating = false;
   let isSpeaking = false;
@@ -156,25 +103,37 @@ export function createSelfControlledConversation({
   let interruptBarrierUntil = 0;
   let speakStartWatchdogTimer = null;
   let speakEndWatchdogTimer = null;
-  // アバター発話中は自分のマイク音声そのものを物理的にミュートする。
-  // allowInterrupt=falseは受信した文字起こしを無視するだけで、LiveAvatar側が
-  // マイク音声を独自に検知して反応する経路までは止められない。マイクの発行自体を
-  // 止めれば、相手に音声が一切届かなくなるため、その経路も含めて確実に防げる。
-  //
-  // 「あるべき状態(desired)」と「実際に適用できた状態(applied)」を分けて持つ。
-  // setMicrophoneEnabledは非同期で失敗もするため、呼び出しただけで適用済みとみなすと
-  // 実状態とずれる。特に解除失敗を適用済み扱いにすると、マイクが落ちたまま復帰しない。
-  let desiredMicrophoneMuted = false;
-  let appliedMicrophoneMuted = false;
-  let isMicrophoneSyncInFlight = false;
-  let microphoneSyncRetryTimer = null;
-  let microphoneSyncRetryCount = 0;
+  let disposed = false;
+  let inputEnabled = true;
+  let transportReady = true;
+  let scenarioVersion;
+  let speechFault = false;
+  // response: 上限到達後の応答が終わるまで閉じる。operator: 聞き取りなしで操作待ち。
+  let inputCutoff = null;
+  const microphone = createMicrophoneController({
+    getRoom,
+    initialMuted: microphoneInitiallyMuted,
+    retryMs: micSyncRetryMs,
+    maxRetries: micSyncMaxRetries,
+    onLog,
+    onState: onMicStateChange,
+    onError
+  });
+  const userTurn = createUserTurnDetector({
+    getLocalSpeaking: () => Boolean(getRoom?.()?.localParticipant?.isSpeaking),
+    silenceMs: debounceMs,
+    maxDurationMs: maxUserTurnMs,
+    pollMs: flushPollMs,
+    onEnd: finishUserTurn,
+    onLog
+  });
+  const localParticipant = getRoom?.()?.localParticipant;
+  localParticipant?.on?.("isSpeakingChanged", handleLocalUserSpeechChange);
 
   function clearBuffer() {
     bufferedTranscripts = [];
     bufferIsRevision = false;
-    clearTimeout(flushTimer);
-    flushTimer = null;
+    userTurn.reset();
   }
 
   function clearSpeechWatchdogs() {
@@ -304,7 +263,7 @@ export function createSelfControlledConversation({
       return false;
     }
 
-    return !hasCorrelationMeta(meta);
+    return true;
   }
 
   function buildQueuedSpeechSegment(segment, { segmentGenerationId, responseId }) {
@@ -312,7 +271,8 @@ export function createSelfControlledConversation({
       ...segment,
       generationId: segmentGenerationId,
       responseId,
-      segmentId: createClientId("segment")
+      // LiveAvatarはUUID形式のevent_idを要求する。接頭辞を付けると発話が受理されない。
+      segmentId: crypto.randomUUID()
     };
   }
 
@@ -328,8 +288,20 @@ export function createSelfControlledConversation({
     };
   }
 
-  function isUserSpeaking() {
-    return Boolean(getRoom?.()?.localParticipant?.isSpeaking);
+  function canAcceptUserInput() {
+    return (
+      !disposed &&
+      inputEnabled &&
+      transportReady &&
+      !speechFault &&
+      !inputCutoff &&
+      (allowInterrupt || !hasActiveResponse())
+    );
+  }
+
+  function handleLocalUserSpeechChange() {
+    if (!canAcceptUserInput() || userTurn.expireIfNeeded()) return;
+    userTurn.localSpeechChanged();
   }
 
   function hasActiveResponse() {
@@ -343,71 +315,36 @@ export function createSelfControlledConversation({
     );
   }
 
-  function clearMicrophoneSyncRetryTimer() {
-    clearTimeout(microphoneSyncRetryTimer);
-    microphoneSyncRetryTimer = null;
-  }
-
-  function scheduleMicrophoneSyncRetry() {
-    if (microphoneSyncRetryTimer || microphoneSyncRetryCount >= micSyncMaxRetries) {
-      return;
-    }
-
-    microphoneSyncRetryCount += 1;
-    microphoneSyncRetryTimer = setTimeout(() => {
-      microphoneSyncRetryTimer = null;
-      applyMicrophoneMuteState();
-    }, micSyncRetryMs);
-  }
-
-  // desired と applied の差を埋める。多重呼び出しは直列化する
-  // (ミュート→解除が短時間に連続したとき、完了順が入れ替わって実状態が反転しないように)。
-  function applyMicrophoneMuteState() {
-    if (isMicrophoneSyncInFlight || desiredMicrophoneMuted === appliedMicrophoneMuted) {
-      return;
-    }
-
-    const room = getRoom();
-
-    if (typeof room?.localParticipant?.setMicrophoneEnabled !== "function") {
-      // まだ部屋に接続していない等で適用できない。desiredは保持したままにしておき、
-      // 次のsyncか再試行で追いつかせる(ここでappliedを進めると実状態とずれる)。
-      return;
-    }
-
-    const targetMuted = desiredMicrophoneMuted;
-    isMicrophoneSyncInFlight = true;
-
-    Promise.resolve(room.localParticipant.setMicrophoneEnabled(!targetMuted))
-      .then(() => {
-        appliedMicrophoneMuted = targetMuted;
-        microphoneSyncRetryCount = 0;
-        isMicrophoneSyncInFlight = false;
-        onLog(targetMuted ? "microphone.muted" : "microphone.unmuted");
-        // 待っている間にdesiredが変わっていた場合に追随する。
-        applyMicrophoneMuteState();
-      })
-      .catch((error) => {
-        isMicrophoneSyncInFlight = false;
-        onLog(`microphone.${targetMuted ? "mute" : "unmute"}_failed: ${error.message}`);
-        // 失敗直後にその場で再実行すると間隔なしで回り続けるため、必ず遅延を挟む。
-        scheduleMicrophoneSyncRetry();
-      });
-  }
-
-  // hasActiveResponse()の状態が変わるたびに呼ぶ。応答中(生成〜発話完了まで)はマイクを
-  // ミュートし、完全にアイドルに戻ったらミュートを解除する。
   function syncMicrophoneMuteState() {
-    const shouldMute = hasActiveResponse();
+    if (inputCutoff === "response" && !hasActiveResponse()) inputCutoff = null;
+    const muted =
+      !inputEnabled ||
+      !transportReady ||
+      speechFault ||
+      Boolean(inputCutoff) ||
+      (!allowInterrupt && hasActiveResponse());
+    if (muted) clearBuffer();
+    microphone.setMuted(muted);
+  }
 
-    if (shouldMute !== desiredMicrophoneMuted) {
-      desiredMicrophoneMuted = shouldMute;
-      // 目標が変わったので、前の目標に対する再試行の残りカウントはリセットする。
-      microphoneSyncRetryCount = 0;
-      clearMicrophoneSyncRetryTimer();
+  function applyScenarioState(state) {
+    if (!state || disposed) return !disposed;
+    if (scenarioVersion !== undefined && state.version < scenarioVersion) return false;
+    if (inputCutoff === "operator" && state.version > scenarioVersion) inputCutoff = null;
+    scenarioVersion = state.version;
+    inputEnabled = state.acceptsPatientInput !== false;
+    if (!inputEnabled) {
+      clearBuffer();
+      clearRecentFinalizedTranscript();
     }
+    syncMicrophoneMuteState();
+    return true;
+  }
 
-    applyMicrophoneMuteState();
+  function setTransportReady(ready) {
+    transportReady = ready;
+    if (!ready) clearBuffer();
+    syncMicrophoneMuteState();
   }
 
   function rememberFinalizedTranscript(text, chainLength) {
@@ -442,7 +379,7 @@ export function createSelfControlledConversation({
   async function publishControlEvent(event) {
     const room = getRoom();
 
-    if (!room?.localParticipant) {
+    if (disposed || !room?.localParticipant) {
       throw new Error("LiveKit room is not connected");
     }
 
@@ -455,7 +392,14 @@ export function createSelfControlledConversation({
   }
 
   async function dispatchNextSpeech() {
-    if (isSpeaking || isDispatchingSpeech || pendingSpeechSegment || speechQueue.length === 0) {
+    if (
+      disposed ||
+      speechFault ||
+      isSpeaking ||
+      isDispatchingSpeech ||
+      pendingSpeechSegment ||
+      speechQueue.length === 0
+    ) {
       return;
     }
 
@@ -470,23 +414,25 @@ export function createSelfControlledConversation({
       return;
     }
 
-    isDispatchingSpeech = true;
+    isDispatchingSpeech = nextSpeech;
+    pendingSpeechSegment = nextSpeech;
 
     try {
       await publishControlEvent({
         event_type: "avatar.speak_text",
+        event_id: nextSpeech.segmentId,
         text: nextSpeech.speechText,
         client_generation_id: String(nextSpeech.generationId),
         client_response_id: nextSpeech.responseId,
         client_segment_id: nextSpeech.segmentId
       });
-      pendingSpeechSegment = nextSpeech;
+      if (disposed || nextSpeech.generationId !== generationId) return;
 
       // エコー(スピーカー回り込み)判定用に、発話テキストを記憶する。
       echoGuard.rememberAvatarSpeech(nextSpeech.speechText);
       echoGuard.rememberAvatarSpeech(nextSpeech.subtitleText);
 
-      startSpeakStartWatchdog(nextSpeech);
+      if (pendingSpeechSegment === nextSpeech) startSpeakStartWatchdog(nextSpeech);
 
       onLog(`avatar.speak_text: ${nextSpeech.speechText}`);
       onLog(
@@ -497,17 +443,37 @@ export function createSelfControlledConversation({
         })}`
       );
     } catch (error) {
-      // publish失敗時はキューに戻し、少し待って再送を試みる(1回の失敗で無音のまま止めない)。
-      speechQueue.unshift(nextSpeech);
+      if (disposed || nextSpeech.generationId !== generationId) return;
       pendingSpeechSegment = null;
-      scheduleDispatchRetry(1000);
+      nextSpeech.publishFailures = (nextSpeech.publishFailures || 0) + 1;
+      if (nextSpeech.publishFailures < 3) {
+        speechQueue.unshift(nextSpeech);
+        scheduleDispatchRetry(1000);
+      } else {
+        speechFault = true;
+        clearSpeechState();
+        syncMicrophoneMuteState();
+      }
       throw error;
     } finally {
-      isDispatchingSpeech = false;
+      if (isDispatchingSpeech === nextSpeech) {
+        isDispatchingSpeech = false;
+        syncMicrophoneMuteState();
+        if (
+          !disposed &&
+          !dispatchResumeTimer &&
+          !activeSpeechSegment &&
+          !pendingSpeechSegment &&
+          speechQueue.length
+        ) {
+          queueMicrotask(() => dispatchNextSpeech().catch(onError));
+        }
+      }
     }
   }
 
   async function queueSpeech(segment, { segmentGenerationId = generationId, responseId } = {}) {
+    if (disposed) return;
     const normalizedSegment = normalizeSpeechSegment(segment);
 
     if (!normalizedSegment) {
@@ -517,7 +483,7 @@ export function createSelfControlledConversation({
     speechQueue.push(
       buildQueuedSpeechSegment(normalizedSegment, {
         segmentGenerationId,
-        responseId: responseId || createClientId("response")
+        responseId: responseId || crypto.randomUUID()
       })
     );
     syncMicrophoneMuteState();
@@ -526,26 +492,30 @@ export function createSelfControlledConversation({
 
   async function interruptAvatar() {
     try {
-      await publishControlEvent({ event_type: "avatar.interrupt" });
+      await publishControlEvent({
+        event_type: "avatar.interrupt",
+        event_id: crypto.randomUUID()
+      });
     } catch (error) {
       onLog(`avatar.interrupt failed: ${error.message}`);
     }
   }
 
-  function cancelCurrentResponse() {
+  function cancelCurrentResponse({ syncMicrophone = true, interrupt = true } = {}) {
     generationId += 1;
     isGenerating = false;
     interruptBarrierUntil = Date.now() + interruptGraceMs;
     clearSpeechState();
+    isDispatchingSpeech = false;
     clearDispatchResumeTimer();
     streamAbortController?.abort();
     streamAbortController = null;
-    syncMicrophoneMuteState();
+    if (syncMicrophone) syncMicrophoneMuteState();
     onSpeechReset();
-    interruptAvatar().catch(() => {});
+    if (interrupt) interruptAvatar().catch(() => {});
   }
 
-  async function flushBufferedTranscripts() {
+  async function flushBufferedTranscripts({ capped = false } = {}) {
     const combinedText = normalizeTranscript(bufferedTranscripts);
     const isRevision = bufferIsRevision;
     // 継続結合された発話ならチェーン長を1伸ばす。新規の発話ならチェーン長は1から。
@@ -553,16 +523,18 @@ export function createSelfControlledConversation({
 
     clearBuffer();
 
-    if (!combinedText) {
+    if (disposed || !inputEnabled || !transportReady || !combinedText) {
       return;
     }
 
     const currentGenerationId = ++generationId;
-    const responseId = createClientId("response");
+    const responseId = crypto.randomUUID();
     isGenerating = true;
+    if (capped) inputCutoff = "response";
     syncMicrophoneMuteState();
     streamAbortController = new AbortController();
-    rememberFinalizedTranscript(combinedText, chainLength);
+    if (capped) clearRecentFinalizedTranscript();
+    else rememberFinalizedTranscript(combinedText, chainLength);
     onLog(`user.transcription.final: ${combinedText}${isRevision ? " (revision)" : ""}`);
 
     try {
@@ -570,9 +542,10 @@ export function createSelfControlledConversation({
         sessionId: getSessionId(),
         text: combinedText,
         revision: isRevision,
+        expectedVersion: scenarioVersion,
         signal: streamAbortController.signal,
         onSpeechSegment: async (segment) => {
-          if (currentGenerationId !== generationId) {
+          if (currentGenerationId !== generationId || !applyScenarioState(segment.state)) {
             return;
           }
 
@@ -587,6 +560,7 @@ export function createSelfControlledConversation({
         return;
       }
 
+      applyScenarioState(result?.state);
       onAnswer(result);
       isGenerating = false;
       syncMicrophoneMuteState();
@@ -596,48 +570,43 @@ export function createSelfControlledConversation({
         return;
       }
 
-      if (streamAbortController?.signal.aborted || error.name === "AbortError") {
-        streamAbortController = null;
-        return;
-      }
-
+      const aborted = streamAbortController?.signal.aborted || error.name === "AbortError";
       isGenerating = false;
       syncMicrophoneMuteState();
       streamAbortController = null;
-      onError(error);
-
-      const fallbackText = "内部エラーが発生しました。もう一度お願いします。";
-
-      try {
-        await queueSpeech(fallbackText, {
-          segmentGenerationId: currentGenerationId,
-          responseId
-        });
-      } catch (publishError) {
-        onLog(`avatar.speak_text failed: ${publishError.message}`);
-      }
+      if (!aborted) onError(error);
     }
   }
 
-  function scheduleFlush(delayMs = debounceMs) {
-    clearTimeout(flushTimer);
-    flushTimer = setTimeout(() => {
-      if (bufferedTranscripts.length > 0 && isUserSpeaking()) {
-        onLog("user.transcription.waiting_for_silence");
-        scheduleFlush(flushPollMs);
-        return;
-      }
-
-      flushBufferedTranscripts().catch((error) => {
-        onError(error);
-      });
-    }, delayMs);
+  function finishUserTurn(details) {
+    if (!canAcceptUserInput()) return;
+    const capped = details.reason === "max_duration";
+    onLog(
+      `user.turn.finalized: ${JSON.stringify({ ...details, hasTranscript: bufferedTranscripts.length > 0 })}`
+    );
+    if (capped && bufferedTranscripts.length === 0) {
+      inputCutoff = "operator";
+      clearBuffer();
+      clearRecentFinalizedTranscript();
+      syncMicrophoneMuteState();
+      onLog("user.turn.input_paused: 30秒以内に有効な文字起こしがなく、操作係の再開を待ちます");
+      Promise.resolve(onInputTimeout({ expectedVersion: scenarioVersion })).catch(onError);
+      return;
+    }
+    flushBufferedTranscripts({ capped }).catch(onError);
   }
 
   function enqueueUserTranscript(text) {
     const normalizedText = String(text || "").trim();
 
-    if (!normalizedText) {
+    if (
+      disposed ||
+      !inputEnabled ||
+      !transportReady ||
+      speechFault ||
+      inputCutoff ||
+      !normalizedText
+    ) {
       return;
     }
 
@@ -660,6 +629,7 @@ export function createSelfControlledConversation({
       onLog(`user.transcription.ignored_while_speaking: ${normalizedText}`);
       return;
     }
+    if (userTurn.expireIfNeeded()) return;
 
     const appendToRecentTranscript = shouldAppendToRecentTranscript();
 
@@ -685,11 +655,18 @@ export function createSelfControlledConversation({
     }
 
     bufferedTranscripts.push(normalizedText);
-    scheduleFlush();
+    userTurn.transcriptReceived();
   }
 
   function handleAgentResponseEvent(event) {
-    if (!event || typeof event !== "object") {
+    if (disposed || !event || typeof event !== "object") {
+      return;
+    }
+
+    if (event.event_type === "user.speak_started" || event.event_type === "user.speak_ended") {
+      if (canAcceptUserInput() && !userTurn.expireIfNeeded()) {
+        userTurn.remoteSpeechChanged(event.event_type === "user.speak_started");
+      }
       return;
     }
 
@@ -699,6 +676,8 @@ export function createSelfControlledConversation({
     }
 
     if (event.event_type === "avatar.speak_started") {
+      if (isWithinInterruptBarrier() && !hasCorrelationMeta(extractEventGenerationMeta(event)))
+        return;
       if (activeSpeechSegment && eventMatchesSegment(event, activeSpeechSegment)) {
         return;
       }
@@ -735,6 +714,8 @@ export function createSelfControlledConversation({
     }
 
     if (isAvatarSubtitleEndEvent(event)) {
+      if (isWithinInterruptBarrier() && !hasCorrelationMeta(extractEventGenerationMeta(event)))
+        return;
       if (!activeSpeechSegment) {
         if (hasCorrelationMeta(extractEventGenerationMeta(event)) || isWithinInterruptBarrier()) {
           onLog(`avatar.speak_end ignored: ${JSON.stringify(extractEventGenerationMeta(event))}`);
@@ -769,15 +750,45 @@ export function createSelfControlledConversation({
   }
 
   function reset() {
+    inputCutoff = null;
     cancelCurrentResponse();
     clearBuffer();
     clearRecentFinalizedTranscript();
-    // セッション終了後に残ったタイマーが発火して、切断済みの部屋を触らないようにする。
-    clearMicrophoneSyncRetryTimer();
+    speechFault = false;
+    echoGuard.reset();
+  }
+
+  async function receiveOperatorSegment(segment) {
+    if (disposed || (scenarioVersion !== undefined && segment.state?.version < scenarioVersion))
+      return;
+    if (segment.replace) {
+      inputCutoff = null;
+      cancelCurrentResponse({ syncMicrophone: false });
+      clearBuffer();
+      clearRecentFinalizedTranscript();
+      speechFault = false;
+    }
+    // 先にキューへ積み、状態変更の瞬間にマイクが開くのを防ぐ。
+    const queued = queueSpeech(segment);
+    applyScenarioState(segment.state);
+    await queued;
+  }
+
+  function dispose() {
+    if (disposed) return;
+    disposed = true;
+    cancelCurrentResponse({ syncMicrophone: false, interrupt: false });
+    clearBuffer();
+    localParticipant?.off?.("isSpeakingChanged", handleLocalUserSpeechChange);
+    microphone.dispose();
     echoGuard.reset();
   }
 
   return {
+    applyScenarioState,
+    setTransportReady,
+    receiveOperatorSegment,
+    dispose,
     handleAgentResponseEvent,
     interruptAvatar,
     speakText: queueSpeech,

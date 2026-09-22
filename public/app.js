@@ -71,24 +71,6 @@ function describeMissingPersona(config) {
     );
   }
 
-  if (!config.selfControlled && !config.hasLlmConfigurationId) {
-    messages.push(
-      "Custom LLM を使う場合は `LIVEAVATAR_LLM_CONFIGURATION_ID` を設定してください。未設定なら Full mode 既定の LLM が使われます。"
-    );
-  }
-
-  if (!config.selfControlled && !config.hasContextId && !config.hasVoiceId) {
-    messages.push(
-      "`LIVEAVATAR_CONTEXT_ID` と `LIVEAVATAR_VOICE_ID` が未設定です。接続はできても会話や声の挙動が期待通りにならない可能性があります。"
-    );
-  }
-
-  if (!config.selfControlled && !config.hasContextId) {
-    messages.push(
-      "`LIVEAVATAR_CONTEXT_ID` が未設定です。FULL mode でも返答が成立しない場合があります。"
-    );
-  }
-
   if (!config.hasVoiceId) {
     messages.push("`LIVEAVATAR_VOICE_ID` は未設定です。アバター既定の voice が使われます。");
   }
@@ -181,7 +163,7 @@ startBtn.addEventListener("click", async () => {
     await manager.start();
     await refreshDialogueLogs();
     startDialoguePolling();
-    log("Ready. Sandbox sessions are short, so expect disconnects around the one-minute mark.");
+    log("接続完了。台本に沿って進行できます。");
   } catch (error) {
     log("Start failed:", describeSessionError(error));
     resetDebugUi();

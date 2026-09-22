@@ -61,10 +61,14 @@ function showAudioUnlockOverlay() {
   audioUnlockOverlay?.classList.remove("hidden");
 }
 
-audioUnlockOverlay?.addEventListener("click", () => {
-  remoteAudio.play().catch(() => {});
-  remoteVideo.play().catch(() => {});
-  audioUnlockOverlay.classList.add("hidden");
+audioUnlockOverlay?.addEventListener("click", async () => {
+  try {
+    await remoteAudio.play();
+    remoteVideo.play().catch(() => {});
+    audioUnlockOverlay.classList.add("hidden");
+  } catch (error) {
+    console.error("audio unlock failed", error);
+  }
 });
 
 // 予期しない切断(サンドボックス時間切れ・ネットワーク断など)からの自動再接続。
@@ -78,6 +82,7 @@ function scheduleAutoRestart() {
   if (!shouldAutostart || manualStop) {
     return;
   }
+  if (autoRestartTimer) return;
 
   if (autoRestartAttempt >= AUTO_RESTART_DELAYS_MS.length) {
     setStageMessage("再接続に失敗しました。Startボタンで再開してください。");
@@ -90,6 +95,7 @@ function scheduleAutoRestart() {
 
   clearTimeout(autoRestartTimer);
   autoRestartTimer = setTimeout(async () => {
+    autoRestartTimer = null;
     try {
       startBtn.disabled = true;
       stopBtn.disabled = false;
@@ -117,6 +123,7 @@ const manager = createSessionManager({
   showSubtitles,
   onConnectionStateChange: setConnectionState,
   onMicStateChange: setMicState,
+  onLog: (message) => console.debug(message),
   onAudioBlocked: showAudioUnlockOverlay,
   onError: (error) => console.error(error),
   onDisconnected: () => {
@@ -135,6 +142,8 @@ startBtn.addEventListener("click", async () => {
   }
 
   manualStop = false;
+  clearTimeout(autoRestartTimer);
+  autoRestartTimer = null;
   autoRestartAttempt = 0;
   startBtn.disabled = true;
   stopBtn.disabled = false;
@@ -155,6 +164,7 @@ stopBtn.addEventListener("click", async () => {
   showHudTemporarily();
   manualStop = true;
   clearTimeout(autoRestartTimer);
+  autoRestartTimer = null;
 
   try {
     await manager.stop();
@@ -191,27 +201,38 @@ document.addEventListener("mousemove", showHudTemporarily);
 
 // オペレーター用ショートカット(?optoken=<OPERATOR_TOKEN> 付きで開いた場合のみ有効)。
 // 1/2/3=Voting分岐A/B/C、n=次へ(強制)、r=再発話。既存の f / s とは衝突しない。
+let operatorBusy = false;
 async function callOperatorApi(path, body = {}) {
-  if (!operatorToken) {
+  if (!operatorToken || !manager.isStarted() || operatorBusy || !operatorState) {
     return;
   }
-
+  operatorBusy = true;
   try {
     const response = await fetch(path, {
+      signal: AbortSignal.timeout(8000),
       method: "POST",
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${operatorToken}`
       },
-      body: JSON.stringify({ ...body, sessionId: manager.getSessionId() })
+      body: JSON.stringify({
+        ...body,
+        sessionId: manager.getSessionId(),
+        expectedVersion: operatorState.version
+      })
     });
     const data = await response.json().catch(() => ({}));
 
     if (!response.ok || data?.ok === false) {
       console.warn("operator api failed", path, data);
+    } else {
+      operatorState = data.state;
     }
   } catch (error) {
     console.error("operator api error", path, error);
+  } finally {
+    operatorBusy = false;
+    refreshOperatorState();
   }
 }
 
@@ -237,7 +258,7 @@ async function refreshOperatorState() {
   try {
     const response = await fetch(
       `/api/operator/state?sessionId=${encodeURIComponent(manager.getSessionId() || "")}`,
-      { headers: { authorization: `Bearer ${operatorToken}` } }
+      { signal: AbortSignal.timeout(8000), headers: { authorization: `Bearer ${operatorToken}` } }
     );
     const data = await response.json().catch(() => ({}));
 
@@ -254,6 +275,8 @@ if (operatorToken) {
 }
 
 document.addEventListener("keydown", (event) => {
+  if (event.repeat || event.target.closest?.("input, textarea, select, [contenteditable=true]"))
+    return;
   const key = event.key.toLowerCase();
 
   if (key === "f") {
@@ -287,6 +310,9 @@ document.addEventListener("keydown", (event) => {
 
   if (key === "r") {
     callOperatorApi("/api/operator/say");
+  }
+  if (key === "m") {
+    callOperatorApi("/api/operator/input", { paused: !operatorState?.inputPaused });
   }
 });
 

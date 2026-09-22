@@ -51,7 +51,11 @@ function parseSseEventBlock(block) {
 }
 
 async function fetchJson(url, options = {}) {
-  const response = await fetch(url, options);
+  const timeout = AbortSignal.timeout(20_000);
+  const response = await fetch(url, {
+    ...options,
+    signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout
+  });
   const data = await response.json().catch(() => ({}));
   return { response, data };
 }
@@ -98,8 +102,9 @@ export async function ensureMicrophoneAccess({
   stream.getTracks().forEach((track) => track.stop());
 }
 
-export async function fetchLiveAvatarConfig() {
+export async function fetchLiveAvatarConfig(options = {}) {
   const data = await requestJson("/api/liveavatar/config", {
+    ...options,
     errorMessage: "config fetch failed"
   });
   return data.config || null;
@@ -108,15 +113,17 @@ export async function fetchLiveAvatarConfig() {
 export async function respondWithDialogueStream(
   sessionId,
   text,
-  { signal, revision = false, onEvent = () => {} } = {}
+  { signal, revision = false, expectedVersion, onEvent = () => {} } = {}
 ) {
   const response = await fetch("/api/dialogue/respond/stream", {
     method: "POST",
-    signal,
+    signal: signal
+      ? AbortSignal.any([signal, AbortSignal.timeout(25_000)])
+      : AbortSignal.timeout(25_000),
     headers: {
       "content-type": "application/json"
     },
-    body: JSON.stringify({ sessionId, text, revision })
+    body: JSON.stringify({ sessionId, text, revision, expectedVersion })
   });
 
   if (!response.ok) {
@@ -187,48 +194,75 @@ export async function respondWithDialogueStream(
   return finalResult;
 }
 
-export async function bindDialogueSession(sessionId) {
+export async function bindDialogueSession(sessionId, options = {}) {
   if (!sessionId) {
     return null;
   }
 
-  return postJson("/api/dialogue/session", { sessionId }, "dialogue session bind failed");
+  return postJson("/api/dialogue/session", { sessionId }, "dialogue session bind failed", options);
+}
+
+export function pauseDialogueInput(sessionId, expectedVersion, options = {}) {
+  return postJson(
+    "/api/dialogue/input-timeout",
+    { sessionId, expectedVersion },
+    "音声入力の停止状態を同期できませんでした。操作係の再発話または入力停止・再開で復帰してください",
+    options
+  );
 }
 
 // オペレーター操作(分岐選択・強制送り・再発話)で確定した医師セリフを
 // サーバーからpush受信するためのSSEチャンネル。
-export function subscribeDialogueEvents(sessionId, { onSpeechSegment = () => {} } = {}) {
+export function subscribeDialogueEvents(
+  sessionId,
+  { onSpeechSegment = () => {}, onState = () => {}, onConnectionChange = () => {} } = {}
+) {
   const source = new EventSource(
     `/api/dialogue/events?sessionId=${encodeURIComponent(sessionId || "")}`
   );
 
-  source.addEventListener("speech_segment", (event) => {
-    try {
-      const data = JSON.parse(event.data);
+  source.addEventListener("connected", (event) => {
+    const data = JSON.parse(event.data);
+    onConnectionChange(true, data);
+  });
+  source.addEventListener("scenario_state", (event) => onState(JSON.parse(event.data).state));
+  source.addEventListener("error", () => onConnectionChange(false));
 
-      if (data?.speechText || data?.text) {
-        onSpeechSegment({
-          speechText: data.speechText || data.text || "",
-          subtitleText: data.subtitleText || data.speechText || data.text || ""
-        });
-      }
+  source.addEventListener("speech_segment", (event) => {
+    let data;
+    try {
+      data = JSON.parse(event.data);
     } catch {
-      // Ignore malformed events.
+      return;
+    }
+    if (data?.speechText || data?.text) {
+      onSpeechSegment({
+        state: data.state,
+        replace: data.replace,
+        speechText: data.speechText || data.text || "",
+        subtitleText: data.subtitleText || data.speechText || data.text || ""
+      });
     }
   });
 
   return source;
 }
 
-export async function createLiveAvatarSessionToken() {
-  return postJson("/api/liveavatar/session-token", undefined, "session token creation failed");
+export async function createLiveAvatarSessionToken(options = {}) {
+  return postJson(
+    "/api/liveavatar/session-token",
+    undefined,
+    "session token creation failed",
+    options
+  );
 }
 
-export async function startLiveAvatarSession(sessionToken) {
+export async function startLiveAvatarSession(sessionToken, options = {}) {
   const data = await postJson(
     "/api/liveavatar/start-session",
     { sessionToken },
-    "session start failed"
+    "session start failed",
+    options
   );
 
   if (!data.livekit_url || !data.livekit_token) {
@@ -236,6 +270,15 @@ export async function startLiveAvatarSession(sessionToken) {
   }
 
   return data;
+}
+
+export function keepLiveAvatarSessionAlive(sessionId, options = {}) {
+  return postJson(
+    "/api/liveavatar/keep-alive",
+    { sessionId },
+    "session keep-alive failed",
+    options
+  );
 }
 
 export async function stopLiveAvatarSession(sessionToken) {
@@ -268,12 +311,23 @@ export async function connectLiveKitRoom({
   onTrackUnsubscribed = () => {},
   onDataReceived = () => {},
   onParticipantConnected = () => {},
-  onParticipantDisconnected = () => {}
+  onParticipantDisconnected = () => {},
+  onRoomCreated = () => {},
+  audioCaptureDefaults = {},
+  signal
 }) {
   const room = new Room({
     adaptiveStream: true,
-    dynacast: true
+    dynacast: true,
+    audioCaptureDefaults: {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: false,
+      channelCount: 1,
+      ...audioCaptureDefaults
+    }
   });
+  onRoomCreated(room);
 
   room.on(RoomEvent.Connected, () => {
     onConnected(room);
@@ -296,9 +350,15 @@ export async function connectLiveKitRoom({
   room.on(RoomEvent.ParticipantConnected, onParticipantConnected);
   room.on(RoomEvent.ParticipantDisconnected, onParticipantDisconnected);
 
-  await room.connect(livekitUrl, livekitToken);
-  attachExistingTracks(room, attachTrack);
-  await room.localParticipant.setMicrophoneEnabled(true);
-
-  return room;
+  try {
+    signal?.throwIfAborted();
+    await room.connect(livekitUrl, livekitToken);
+    signal?.throwIfAborted();
+    attachExistingTracks(room, attachTrack);
+    // マイクは台本・発話・進行チャンネルの準備が整ってから会話コントローラーが開く。
+    return room;
+  } catch (error) {
+    await room.disconnect();
+    throw error;
+  }
 }
