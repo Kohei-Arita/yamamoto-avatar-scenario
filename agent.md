@@ -72,6 +72,7 @@ README を置き換えるものではありません。ここには、毎回守�
 
 - **非発話フィルタ**（`public/transcript-filter.js` / `src/features/scenario/utterance-filter.js`）: ASRの句読点だけ・一音だけの断片を除外。これを外すと `patient_any` ノードが素通しされて台本が飛ぶ
 - **エコーガード**（`public/transcript-echo-guard.js`）: スピーカー回り込みをアバター自身の発話と照合して無視
+- **ユーザー発話の区切り**（`public/user-turn-detector.js`）: LiveAvatarとLiveKitの両方の発話状態を使い、文字起こしだけのデバウンスへ戻さない。受付は最初の検出から30秒固定で、聞き取りなしなら操作係の再開待ちにする
 - **発話ウォッチドッグ / 再送**（`liveavatar-self-controller.js`）: `speak_started/ended` の取りこぼしで無音停止しないための保険
 - **起動処理の世代管理**（`liveavatar-session-manager.js`）: Start 中の Stop 割り込みで sessionId が失われないようにしている
 - ブラウザ側とサーバー側で二重に防いでいる箇所は、**両方**残すこと（片方の実装を「重複」として消さない）

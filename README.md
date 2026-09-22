@@ -64,6 +64,7 @@ npm run dev   # → http://localhost:3000
 | `OPERATOR_TOKEN`                          | オペレーターAPIのBearerトークン（**必須**。未設定だと操作APIは503）                                               |
 | `LIVEAVATAR_ALLOW_INTERRUPT`              | 既定`false`＝アバターが話し切るまで患者音声を無視（会場の雑音・回り込み対策）。`true`で割り込み可                 |
 | `LIVEAVATAR_TRANSCRIPT_DEBOUNCE_MS`       | 発話検出が終了し、文字起こしの更新も止まってから確定まで待つ時間（既定`1200`ms）。1回の受付上限は別に30秒固定     |
+| `LIVEAVATAR_TRANSCRIPT_CONTINUATION_MS`   | 通常確定後に遅着した句点なしの文字起こしを同じ発話へ結合できる時間（既定`1800`ms）。結合時は直前の遷移を再判定    |
 | `LIVEAVATAR_MICROPHONE_AUTO_GAIN_CONTROL` | ブラウザの自動音量調整。既定`false`。ミキサーで音量を調整する運用を想定。直結マイクで必要なら`true`にして実機確認 |
 | `DIALOGUE_LLM_TIMEOUT_MS`                 | LLM 1処理の制限時間（既定6000ms、再試行を含む）。時間切れ時は分類不一致・元の文字起こし・固定台詞へフォールバック |
 | `LIVEAVATAR_*` / `OPENAI_*`               | LiveAvatar・OpenAI接続設定（`.env.example` 参照）                                                                 |
@@ -103,6 +104,8 @@ LiveAvatarの `user.speak_started` / `user.speak_ended` と、LiveKitの発話�
 
 1回の受付は**最初の発話検出から最大30秒**。発話通知が届かない場合は最初の有効な文字起こしから数える。断片・開始通知が追加されても期限は延長しない。声を検出していない無音待機には、この30秒タイマーを開始しない。
 
+通常の無音確定後に句点なしの文字起こしが遅れて届いた場合は、既定1.8秒以内に限り直前の発話へ結合し、`revision` として同じ進行位置から再判定する。継続チェーンは初回確定を含め最大5件で打ち切る。30秒上限で確定した場合は後続入力を閉じるため、この結合は行わない。
+
 - 上限までに聞き取れた内容がある場合: その内容を一度だけ対話APIへ送り、アバターが返答する。後続の入力は応答が終わるまで閉じる。
 - 有効な文字起こしがない場合（句読点だけ・エコー等の除外後）: 台本を進めず、マイクを停止する。操作画面は「停止中（操作係の再開待ち）」になり、「音声入力を再開」で同じ位置から受付を再開できる。
 - 停止状態のサーバー同期に失敗しても会場画面の入力は閉じたまま。操作画面で入力状態を確認し、必要なら「音声入力を停止」→「音声入力を再開」で復帰する。
@@ -137,7 +140,7 @@ LiveAvatarの `user.speak_started` / `user.speak_ended` と、LiveKitの発話�
 
 **接続時間の上限**: 2026-09-22の実セッションで、300秒（5分）後に `MAX_DURATION_REACHED` で映像・音声が終了したことをLiveAvatar APIで確認した。公式案内の上限はStarterが5分、Essentialが20分、Businessが60分（同日確認）。本番は接続開始からVoting待ち・患者の返答を含む全体の時間に余裕を加え、収まる契約を用意する。keep-aliveでこの上限は延長できず、自動再接続にも映像・音声の中断が伴う。[公式プラン案内](https://help.heygen.com/en/articles/10035615-how-to-get-started-with-liveavatar) / [調査記録](docs/production-hardening.md#追記-5分で映像音声が切れる原因)
 
-トラブル時は `/operator` の進行ログとサーバーログを確認してください。`utterance_ignored`（非発話の断片を無視）、`echo_ignored`（回り込みを無視）、`watchdog.speak_start_retry`（発話コマンド再送）、`revision_rewind`（言い直しによる巻き戻し）、`microphone.muted` / `microphone.unmuted`（発話中のマイク開閉）が該当ログです。
+トラブル時は `/operator` の進行ログとサーバーログを確認してください。`utterance_ignored`（非発話の断片を無視）、`echo_ignored`（回り込みを無視）、`user.turn.finalized`（発話を区切った理由）、`input_timeout`（30秒間に有効な文字起こしがなく入力停止）、`watchdog.speak_start_retry`（発話コマンド再送）、`revision_rewind`（言い直しによる巻き戻し）、`microphone.muted` / `microphone.unmuted`（発話中のマイク開閉）が該当ログです。
 
 リハーサル用の手動チェックリストは [docs/rehearsal.md](docs/rehearsal.md) にあります。
 

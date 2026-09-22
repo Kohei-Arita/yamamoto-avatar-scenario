@@ -9,6 +9,7 @@
 | 対象             | 変更内容                                                                                                                       | 防ぐ問題                                                                       |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
 | 音声入力         | 患者の返答を待つノードで入力を許可し、Voting待機・終端・手動停止・進行SSE切断中はマイクと文字起こし受付を停止                  | 拍手や司会の声で台本が進む、進行情報を受け取れない状態で患者発話を処理する     |
+| 発話の区切り     | LiveAvatarとLiveKitの発話状態を併用し、両方の終了と文字起こし停止を確認。1回の受付は30秒で打ち切る                             | 一瞬の無音判定で話の途中に応答する、会場雑音を無期限に拾い続ける               |
 | 手動操作         | `/operator` に入力停止・再開を追加。会場画面では `optoken` 指定時に `m` キーでも切り替え                                       | 司会進行など、一時的に患者の声を受けたくない場面への対応                       |
 | マイク制御       | ミュート操作の直列化・再試行・状態反映を専用モジュールへ集約。割り込みを明示的に許可した場合は応答中も入力を許可               | 操作の完了順でミュート状態が反転する、解除失敗後に入力が戻らない               |
 | 進行の競合       | 状態に `version` を持たせ、患者発話と操作から `expectedVersion` を送信                                                         | 遅い音声判定がジャンプ・リセット後の進行を上書きする、古い操作で二重に進む     |
@@ -42,11 +43,14 @@
 | 項目                                      | 今回の変更                                                                                                                                     |
 | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | `LIVEAVATAR_MICROPHONE_AUTO_GAIN_CONTROL` | 追加。既定 `false`。直結マイクで自動調整が必要な場合は `true` にして実機確認                                                                   |
+| `LIVEAVATAR_TRANSCRIPT_DEBOUNCE_MS`       | 両方の発話検出と文字起こしが止まってから確定するまでの待機。既定 `1200`                                                                        |
+| `LIVEAVATAR_TRANSCRIPT_CONTINUATION_MS`   | 通常確定後に遅着した句点なしの断片を直前の発話へ結合できる時間。既定 `1800`                                                                    |
 | `DIALOGUE_LLM_TIMEOUT_MS`                 | 追加。既定 `6000`。LLM 1処理の制限時間で、再試行もこの時間に含む                                                                               |
 | 未指定時の接続設定                        | 言語を `ja`、sandboxを `false`、self-controlledを `true` に変更                                                                                |
 | 起動時検証                                | 接続設定と台本スキーマを起動時に検証。`FULL` / self-controlled専用とし、`NODE_ENV=production` では `SCENARIO_SPEECH_MODE=fixed` を要求         |
 | 旧設定                                    | `LIVEAVATAR_CONTEXT_ID` / `LIVEAVATAR_LLM_CONFIGURATION_ID` の処理を削除                                                                       |
 | `POST /api/operator/input`                | 入力停止・再開。`paused` と、画面が保持する `sessionId` / `expectedVersion` を送信                                                             |
+| `POST /api/dialogue/input-timeout`        | 30秒間に有効な文字起こしがなかった場合の入力停止。登録セッションと進行番号を検証し、操作画面へ同期                                             |
 | `POST /api/liveavatar/keep-alive`         | 登録済みの `sessionId` を対象に無操作タイムアウトを延長                                                                                        |
 | 対話・進行SSE                             | bind応答、`speech_segment`、`done`、`connected` に進行状態を追加。入力切り替えは `scenario_state`、operator発話の先頭は `replace: true` で通知 |
 | 古い進行番号                              | 古い患者判定は `superseded` として発話せず、古いoperator操作はHTTP 409で拒否                                                                   |
@@ -60,6 +64,7 @@
 | ファイル                                                                                                                                | 担当                                                               |
 | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
 | [liveavatar-self-controller.js](../public/liveavatar-self-controller.js)                                                                | 音声入力の受付、発話キュー、イベント照合、operator発話への切り替え |
+| [user-turn-detector.js](../public/user-turn-detector.js)                                                                                | 発話終了の確認、固定30秒の受付期限、区切り理由の記録               |
 | [microphone-controller.js](../public/microphone-controller.js)                                                                          | マイク操作の直列化・再試行                                         |
 | [liveavatar-session-manager.js](../public/liveavatar-session-manager.js)                                                                | 起動・停止・再接続、SSE同期、接続ごとの後始末                      |
 | [liveavatar-browser-api.js](../public/liveavatar-browser-api.js)                                                                        | ブラウザ側通信、LiveKit音声取得設定                                |
@@ -69,9 +74,9 @@
 
 ## 検証結果
 
-今回の実装完了時に、以下を確認した。
+現行実装で、以下を確認した。
 
-- `npm test -- --test-reporter=spec`: **110件成功、失敗0件**。全9経路、短答・非発話・エコー、言い直し、操作競合、発話通知、起動中の停止、SSE切断・復帰、LLMタイムアウトなどを含む。
+- `npm test -- --test-reporter=spec`: **126件成功、失敗0件**。全9経路、短答・非発話・エコー、長い発話と30秒上限、言い直し、操作競合、発話通知、起動中の停止、SSE切断・復帰、LLMタイムアウトなどを含む。
 - `npm run lint`: 成功。
 - `npm run format` と `git diff --check`: 完了、差分エラーなし。
 - Chromeで `/xgate` と `/operator` を検証。自動開始、句読点断片の無視、「はい」での進行、手動入力停止・再開、Voting中の入力停止、分岐の発話、`controls=0` での停止キー無効化を確認。ブラウザ例外なし。
@@ -91,7 +96,7 @@
 
 字幕は発話開始通知が届かない場合のウォッチドッグでも表示されるため、字幕が出ることだけでは発話の成功を確認できなかった。初回の模擬接続テストはID形式を検証しておらず、この不具合を見逃していた。
 
-修正では [liveavatar-self-controller.js](../public/liveavatar-self-controller.js) のID生成を `crypto.randomUUID()` に統一し、発話・中断コマンドへ接頭辞なしのUUIDを送るようにした。形式を検証する回帰テストを追加し、**111件の自動テストとlintが成功**した。[公式SDKのID生成](https://github.com/heygen-com/liveavatar-web-sdk/blob/master/packages/js-sdk/src/LiveAvatarSession/LiveAvatarSession.ts)も参照した。
+修正では [liveavatar-self-controller.js](../public/liveavatar-self-controller.js) のID生成を `crypto.randomUUID()` に統一し、発話・中断コマンドへ接頭辞なしのUUIDを送るようにした。形式を検証する回帰テストを追加し、lintと実LiveAvatarで修正を確認した。[公式SDKのID生成](https://github.com/heygen-com/liveavatar-web-sdk/blob/master/packages/js-sdk/src/LiveAvatarSession/LiveAvatarSession.ts)も参照した。
 
 さらに、修正後の `/xgate` を実LiveAvatarへ接続して開始挨拶を検証した。送信IDと一致する発話開始通知、最初の文の終了通知、次の文の開始通知、無音ではない受信音声を確認した。ウォッチドッグの発動は0回。ブラウザ・音声受信までの確認であり、会場スピーカーでの実音確認や全経路の通しとは別の検証である。
 
@@ -132,7 +137,7 @@
 - 有効な文字起こしがない: 台本を進めず入力を停止し、操作係を待つ。追加した `POST /api/dialogue/input-timeout` は登録済みセッション・進行番号を検証し、停止状態をサーバー・操作画面と同期する。「音声入力を再開」で同じ位置から復帰する。
 - 無音待機: 発話を検出するまでは30秒タイマーを開始しない。操作・切断・停止時はタイマーを破棄し、古い受付が新しい進行を止めないようにした。
 
-`user.turn.started` / `user.turn.finalized` に開始源・確定理由・経過時間・両方の発話状態を記録する。聞き取りなしの停止は `input_timeout` として操作画面のログにも残す。受付時間は30秒固定とし、新しい環境変数は増やしていない。既存の `LIVEAVATAR_TRANSCRIPT_DEBOUNCE_MS` をREADMEと `.env.example` に明記した。
+`user.turn.started` / `user.turn.finalized` に開始源・確定理由・経過時間・両方の発話状態を記録する。聞き取りなしの停止は `input_timeout` として操作画面のログにも残す。受付時間は30秒固定とし、新しい環境変数は増やしていない。既存の `LIVEAVATAR_TRANSCRIPT_DEBOUNCE_MS` と `LIVEAVATAR_TRANSCRIPT_CONTINUATION_MS` をREADMEと `.env.example` に明記した。
 
 自動テストでは、発話通知とLiveKitの不一致、200msの検出途切れ、終了後の遅い文字起こし、連続断片・開始通知による期限延長の防止、期限後の入力拒否、雑音のみの停止、操作係の再開、古い期限通知の拒否を確認した。**126件成功、失敗0件**。会場の実マイク・音響での確認は [リハーサル手順](rehearsal.md) に追記した。
 

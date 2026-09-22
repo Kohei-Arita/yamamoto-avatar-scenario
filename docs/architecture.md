@@ -73,7 +73,8 @@ public/user-turn-detector.js  発話終了の確認・1回30秒の受付期限
 
 | パス                                | 内容                                                                                                   |
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `POST /api/dialogue/session`        | セッション作成（直前セッションの進行を自動引き継ぎ）                                                   |
+| `POST /api/dialogue/session`        | LiveAvatarのsessionIdを対話進行へbind（直前セッションの進行を自動引き継ぎ）                            |
+| `POST /api/dialogue/input-timeout`  | 30秒間に有効な文字起こしがなかった入力を停止。登録セッションと進行番号を検証                           |
 | `POST /api/dialogue/respond/stream` | 患者発話→SSE応答（`speech_segment`/`done`/`error`。`revision:true`で直前の患者遷移を巻き戻して再判定） |
 | `GET /api/dialogue/logs`            | 進行ログ                                                                                               |
 | `GET /api/dialogue/events`          | オペレーター発話をブラウザへpushするSSEチャンネル                                                      |
@@ -108,6 +109,8 @@ LiveAvatarへの `avatar.speak_text` は `event_id` を付け、通知の `sourc
 上限到達時に有効な文字起こしがあれば、その時点の内容で一度だけ返答する。割り込み設定にかかわらず、上限後の入力はその応答が終わるまで閉じる。何も聞き取れていなければブラウザで入力を閉じ、`POST /api/dialogue/input-timeout` に `{sessionId, expectedVersion}` を送る。サーバーは登録済みセッション・進行番号を検証し、`inputPaused=true` を進行SSEへ通知する。古い期限通知は409で拒否する。操作係は既存の入力再開APIで復帰できる。
 
 操作・入力停止・進行チャンネル切断時は未確定の文字起こしと受付タイマーを破棄し、接続終了時はLiveKitの購読も解除する。区切りの理由と発話状態は `user.turn.finalized`、聞き取りなしの停止は `input_timeout` で追跡する。
+
+通常の無音確定後に句点なしの文字起こしが遅着した場合は、`LIVEAVATAR_TRANSCRIPT_CONTINUATION_MS`（既定1.8秒）以内に限り直前の発話へ結合し、`revision:true` で同じ進行位置から再判定する。継続チェーンは初回確定を含め最大5件。30秒上限による確定後は入力を閉じるため結合しない。
 
 ## 進行状態の保持
 
