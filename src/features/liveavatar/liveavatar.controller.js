@@ -11,7 +11,12 @@ import { touchScenarioSession } from "../scenario/scenario.store.js";
 const inFlightSessionTokens = new Map();
 
 function getReferer(req) {
-  return req.get("referer") || null;
+  try {
+    const url = new URL(req.get("referer"));
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return null;
+  }
 }
 
 function getOrigin(req) {
@@ -42,7 +47,7 @@ function getClientFingerprint(req) {
     ip: req.ip || req.socket?.remoteAddress || "unknown",
     userAgent: req.get("user-agent") || "",
     origin: req.get("origin") || "",
-    referer: req.get("referer") || ""
+    referer: getReferer(req) || ""
   });
 }
 

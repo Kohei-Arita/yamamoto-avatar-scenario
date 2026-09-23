@@ -16,6 +16,12 @@ const micStateEl = document.getElementById("micState");
 
 const params = new URLSearchParams(window.location.search);
 const operatorToken = params.get("optoken") || "";
+const operatorShortcuts = params.get("shortcuts") === "1" || Boolean(operatorToken);
+if (operatorToken) {
+  const cleanUrl = new URL(window.location.href);
+  cleanUrl.searchParams.delete("optoken");
+  window.history.replaceState(null, "", cleanUrl);
+}
 const shouldAutostart = params.get("autostart") === "1";
 const hideControls = params.get("controls") === "0";
 const showSubtitles = params.get("subtitles") !== "0";
@@ -85,6 +91,8 @@ function scheduleAutoRestart() {
   if (autoRestartTimer) return;
 
   if (autoRestartAttempt >= AUTO_RESTART_DELAYS_MS.length) {
+    resetButtons();
+    setConnectionState("error");
     setStageMessage("再接続に失敗しました。Startボタンで再開してください。");
     return;
   }
@@ -125,7 +133,15 @@ const manager = createSessionManager({
   onMicStateChange: setMicState,
   onLog: (message) => console.debug(message),
   onAudioBlocked: showAudioUnlockOverlay,
-  onError: (error) => console.error(error),
+  onError: (error) => {
+    console.error(error);
+    setConnectionState("error");
+    setMicState("error");
+    if (error.requiresReconnect) {
+      resetButtons();
+      setStageMessage("接続を確認しています。操作係にお知らせください。");
+    }
+  },
   onDisconnected: () => {
     clearTimeout(hudHideTimer);
     setStageMessage("");
@@ -199,11 +215,11 @@ chromaKeyToggle?.addEventListener("change", () => {
 
 document.addEventListener("mousemove", showHudTemporarily);
 
-// オペレーター用ショートカット(?optoken=<OPERATOR_TOKEN> 付きで開いた場合のみ有効)。
+// 認証済み画面のオペレーター用ショートカット(?shortcuts=1 で有効)。
 // 1/2/3=Voting分岐A/B/C、n=次へ(強制)、r=再発話。既存の f / s とは衝突しない。
 let operatorBusy = false;
 async function callOperatorApi(path, body = {}) {
-  if (!operatorToken || !manager.isStarted() || operatorBusy || !operatorState) {
+  if (!operatorShortcuts || !manager.isStarted() || operatorBusy || !operatorState) {
     return;
   }
   operatorBusy = true;
@@ -213,12 +229,13 @@ async function callOperatorApi(path, body = {}) {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: `Bearer ${operatorToken}`
+        ...(operatorToken ? { authorization: `Bearer ${operatorToken}` } : {})
       },
       body: JSON.stringify({
         ...body,
         sessionId: manager.getSessionId(),
-        expectedVersion: operatorState.version
+        expectedVersion: operatorState.version,
+        expectedEpoch: operatorState.epoch
       })
     });
     const data = await response.json().catch(() => ({}));
@@ -251,14 +268,17 @@ function resolveOperatorBranch(slot) {
 }
 
 async function refreshOperatorState() {
-  if (!operatorToken) {
+  if (!operatorShortcuts || !manager.getSessionId()) {
     return;
   }
 
   try {
     const response = await fetch(
       `/api/operator/state?sessionId=${encodeURIComponent(manager.getSessionId() || "")}`,
-      { signal: AbortSignal.timeout(8000), headers: { authorization: `Bearer ${operatorToken}` } }
+      {
+        signal: AbortSignal.timeout(8000),
+        headers: operatorToken ? { authorization: `Bearer ${operatorToken}` } : {}
+      }
     );
     const data = await response.json().catch(() => ({}));
 
@@ -270,7 +290,7 @@ async function refreshOperatorState() {
   }
 }
 
-if (operatorToken) {
+if (operatorShortcuts) {
   setInterval(refreshOperatorState, 2000);
 }
 
@@ -292,7 +312,7 @@ document.addEventListener("keydown", (event) => {
     }
   }
 
-  if (!operatorToken) {
+  if (!operatorShortcuts) {
     return;
   }
 

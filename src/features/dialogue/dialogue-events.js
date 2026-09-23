@@ -1,10 +1,7 @@
+import { writeSseEvent } from "../../shared/http/sse.js";
+
 const subscribersBySession = new Map();
 const HEARTBEAT_INTERVAL_MS = 25_000;
-
-function writeSseEvent(res, event, payload) {
-  res.write(`event: ${event}\n`);
-  res.write(`data: ${JSON.stringify(payload)}\n\n`);
-}
 
 export function subscribeDialogueEvents(sessionId, res, state, openingSegments = []) {
   const key = sessionId || "unbound-session";
@@ -43,6 +40,9 @@ export function broadcastSpeechSegments(sessionId, segments = [], state) {
   for (const res of subscribers) {
     for (const [index, segment] of segments.entries()) {
       writeSseEvent(res, "speech_segment", {
+        speechId: segment.speechId,
+        segmentIndex: segment.segmentIndex,
+        segmentCount: segment.segmentCount,
         state,
         replace: index === 0,
         text: segment.speechText || "",

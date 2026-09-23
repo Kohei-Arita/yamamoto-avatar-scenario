@@ -1,18 +1,19 @@
-import { appendDialogueLog, getDialogueLogs } from "./dialogue-log.store.js";
+import { appendDialogueLog, getDialogueLogs, bindDebugSession } from "./dialogue-log.store.js";
 import { broadcastScenarioState, subscribeDialogueEvents } from "./dialogue-events.js";
-import { isAllowedDialogueSession, isRegisteredSessionId } from "./session-registry.js";
+import {
+  isAllowedDialogueSession,
+  isRegisteredSessionId,
+  registerKnownSessionId
+} from "./session-registry.js";
+import { SERVER_EPOCH } from "../scenario/scenario.store.js";
+import { writeSseEvent, setSseHeaders } from "../../shared/http/sse.js";
 import { getScenarioEngine } from "../scenario/scenario-engine.js";
 import {
   answerUserText,
   bindDialogueSession,
   streamScenarioReply,
-  toSpeechSegments
+  toSpeechBatch
 } from "./dialogue.service.js";
-
-function writeSseEvent(res, event, payload) {
-  res.write(`event: ${event}\n`);
-  res.write(`data: ${JSON.stringify(payload)}\n\n`);
-}
 
 function toSpeechSegmentPayload(segment) {
   if (typeof segment === "string") {
@@ -24,6 +25,9 @@ function toSpeechSegmentPayload(segment) {
   }
 
   return {
+    speechId: segment?.speechId,
+    segmentIndex: segment?.segmentIndex,
+    segmentCount: segment?.segmentCount,
     state: segment?.state,
     text: segment?.speechText || "",
     speechText: segment?.speechText || "",
@@ -31,18 +35,9 @@ function toSpeechSegmentPayload(segment) {
   };
 }
 
-function setSseHeaders(res) {
-  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-  res.setHeader("Cache-Control", "no-cache, no-transform");
-  res.setHeader("Connection", "keep-alive");
-  res.setHeader("X-Accel-Buffering", "no");
-  res.flushHeaders?.();
-}
-
-// LiveAvatarセッションを発行済みのサーバーでは、未知のsessionIdからの
-// 対話リクエストを拒否する(公開URLへの野良リクエスト対策)。
+// 起動直後も未知・未指定のsessionIdを拒否し、別セッションへの暗黙の操作を防ぐ。
 function rejectUnknownSession(req, res) {
-  const sessionId = req.body?.sessionId || null;
+  const sessionId = req.body?.sessionId || req.query?.sessionId || null;
 
   if (isAllowedDialogueSession(sessionId)) {
     return false;
@@ -75,7 +70,7 @@ export function postBindDialogueSession(req, res) {
 
 // 有効な文字起こしがないまま受付上限に達した会場画面から、入力停止だけを受け付ける。
 export function postInputTimeout(req, res) {
-  const { sessionId, expectedVersion } = req.body || {};
+  const { sessionId, expectedVersion, expectedEpoch } = req.body || {};
   if (
     typeof sessionId !== "string" ||
     !sessionId ||
@@ -89,7 +84,7 @@ export function postInputTimeout(req, res) {
   }
   const engine = getScenarioEngine();
   const current = engine.getInputState(sessionId);
-  if (current.version !== expectedVersion) {
+  if (current.version !== expectedVersion || (expectedEpoch && current.epoch !== expectedEpoch)) {
     return res.status(409).json({ ok: false, error: "Scenario has changed", state: current });
   }
   if (!current.acceptsPatientInput) return res.json({ ok: true, state: current });
@@ -115,16 +110,55 @@ export function getDialogueLogsController(req, res) {
   });
 }
 
+export function postPlaybackState(req, res) {
+  const { sessionId, status, message = "", sequence, expectedEpoch } = req.body || {};
+  if (rejectUnknownSession(req, res)) return;
+  if (
+    !["speaking", "idle", "error"].includes(status) ||
+    typeof message !== "string" ||
+    message.length > 500 ||
+    !Number.isSafeInteger(sequence) ||
+    sequence < 1 ||
+    typeof expectedEpoch !== "string"
+  ) {
+    return res.status(400).json({ ok: false, error: "Invalid playback status" });
+  }
+  const applied = getScenarioEngine().reportPlayback(sessionId, {
+    status,
+    message,
+    sequence,
+    expectedEpoch
+  });
+  if (applied && status === "error")
+    appendDialogueLog({ sessionId, kind: "playback_error", answerPreview: message });
+  return res.json({ ok: true, applied });
+}
+
 export function getDialogueEventsController(req, res) {
-  const { sessionId } = req.query;
+  const { sessionId, epoch } = req.query;
+  const engine = getScenarioEngine();
+  // 認証済みの会場画面が旧プロセスから再接続した場合。勝手に冒頭を読まず操作待ちにする。
+  if (
+    !isRegisteredSessionId(sessionId) &&
+    typeof epoch === "string" &&
+    epoch.length > 0 &&
+    epoch.length <= 128 &&
+    epoch !== SERVER_EPOCH
+  ) {
+    registerKnownSessionId(sessionId);
+    if (isRegisteredSessionId(sessionId)) {
+      engine.requireRecovery(sessionId);
+      bindDebugSession(sessionId, { source: "server-recovery" });
+    }
+  }
+  if (rejectUnknownSession(req, res)) return;
 
   setSseHeaders(res);
-  const engine = getScenarioEngine();
   subscribeDialogueEvents(
     sessionId,
     res,
     engine.getInputState(sessionId),
-    toSpeechSegments(engine.getNodeLines(sessionId).lines.join("\n"))
+    toSpeechBatch(engine.getNodeLines(sessionId).lines.join("\n"), engine.getInputState(sessionId))
   );
   console.log("[dialogue] events_subscribed", JSON.stringify({ sessionId: sessionId || null }));
 }
@@ -174,7 +208,7 @@ export async function postRespondWithDialogue(req, res) {
 }
 
 export async function postRespondWithDialogueStream(req, res) {
-  const { sessionId, text, revision, expectedVersion } = req.body || {};
+  const { sessionId, text, revision, expectedVersion, expectedEpoch } = req.body || {};
 
   if (!text || typeof text !== "string") {
     return res.status(400).json({ ok: false, error: "text is required" });
@@ -209,7 +243,8 @@ export async function postRespondWithDialogueStream(req, res) {
         text,
         sessionId: sessionId || null,
         revision: Boolean(revision),
-        expectedVersion
+        expectedVersion,
+        expectedEpoch
       },
       {
         signal: abortController.signal,

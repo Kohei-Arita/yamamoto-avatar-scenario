@@ -9,6 +9,7 @@ test("アバター発話とほぼ同一の文字起こしはエコーと判定�
   const guard = createEchoGuard();
   guard.rememberAvatarSpeech(AVATAR_LINE);
 
+  assert.equal(guard.isLikelyEcho(AVATAR_LINE), true);
   assert.equal(guard.isLikelyEcho("画像では右下葉に約40mmの不整形な結節を認めます"), true);
   assert.equal(guard.isLikelyEcho("PET-CTでは集積が強く悪性腫瘍を疑う所見です。"), true);
 });
@@ -59,4 +60,28 @@ test("resetで記憶を消去できる", () => {
   guard.reset();
 
   assert.equal(guard.isLikelyEcho("画像では右下葉に約40mmの不整形な結節を認めます"), false);
+});
+
+test("挨拶の返礼と、質問に含まれる選択肢の復唱を捨てない", () => {
+  const guard = createEchoGuard();
+  guard.rememberAvatarSpeech("こんにちは。山本です。本日はよろしくお願いします。");
+  guard.rememberAvatarSpeech(
+    "治療効果、副作用、入院、仕事や生活への影響など、何を一番重視されますか。"
+  );
+  guard.rememberAvatarSpeech("入院や在宅酸素が必要になったことはありますか。");
+  for (const text of [
+    "よろしくお願いします",
+    "はい、よろしくお願いします。",
+    "仕事や生活への影響",
+    "入院や在宅酸素"
+  ]) {
+    assert.equal(guard.isLikelyEcho(text), false, text);
+  }
+});
+
+test("別々の文の語句を組み合わせた患者の返答をエコーにしない", () => {
+  const guard = createEchoGuard();
+  guard.rememberAvatarSpeech("仕事や生活への影響を確認します。");
+  guard.rememberAvatarSpeech("ご希望を大切にして考えます。");
+  assert.equal(guard.isLikelyEcho("仕事や生活への影響を大切にして考えます"), false);
 });

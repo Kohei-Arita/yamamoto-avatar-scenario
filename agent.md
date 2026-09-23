@@ -11,7 +11,7 @@ README を置き換えるものではありません。ここには、毎回守�
 
 ## このプロジェクトの前提
 
-- Node.js 20 / ESM の Express アプリです
+- Node.js 22.13以降 / ESM の Express アプリです
 - 主な体験は `HeyGen LiveAvatar + LiveKit + シナリオ状態機械` です
 - 現在の標準経路は `LIVEAVATAR_SELF_CONTROLLED=true` を前提にした self-controlled 構成です
 - ブラウザは表示だけでなく、transcription の集約、対話API呼び出し、avatar への speak 制御も担います
@@ -62,8 +62,9 @@ README を置き換えるものではありません。ここには、毎回守�
 
 ### 3. 医療デモとしての制約を意識する
 
-- アバターが発話する内容は `data/scenarios/*.json` のノード定義から生成されたテキストのみです
-- LLMは intent分類・ASR補正・(任意の)言い換えにのみ使い、自由回答は生成させない
+- 基本動作は「ユーザーの有効な発話 → 一区切りの確認 → 現在の台本で決まった応答」です。自由会話への拡張や、発話途中での進行に変えない。開始挨拶・auto遷移・operator操作と30秒上限は既定の条件を維持する
+- 本番の発話は `data/scenarios/*.json` の台詞と逸脱ハンドリングの定型文に限る。`SCENARIO_SPEECH_MODE=fixed` が必須で、ユーザーの言い回しに応じて回答文を作り替えない
+- 本番のLLMは intent分類・ASR補正の補助にのみ使い、自由回答は生成させない。既存の `paraphrase` は非本番の検証用であり、本番に適用しない
 - シナリオ外の応答を追加する場合は、逸脱ハンドリング(deviation-handler)の定型文として扱う
 
 ### 4. 本番向けの保護機構を外さない
@@ -73,7 +74,7 @@ README を置き換えるものではありません。ここには、毎回守�
 - **非発話フィルタ**（`public/transcript-filter.js` / `src/features/scenario/utterance-filter.js`）: ASRの句読点だけ・一音だけの断片を除外。これを外すと `patient_any` ノードが素通しされて台本が飛ぶ
 - **エコーガード**（`public/transcript-echo-guard.js`）: スピーカー回り込みをアバター自身の発話と照合して無視
 - **ユーザー発話の区切り**（`public/user-turn-detector.js`）: LiveAvatarとLiveKitの両方の発話状態を使い、文字起こしだけのデバウンスへ戻さない。受付は最初の検出から30秒固定で、聞き取りなしなら操作係の再開待ちにする
-- **発話ウォッチドッグ / 再送**（`liveavatar-self-controller.js`）: `speak_started/ended` の取りこぼしで無音停止しないための保険
+- **発話ウォッチドッグ / 再送**（`liveavatar-self-controller.js`）: 開始通知未着は一度再送する。開始・終了を確認できなければ入力を閉じて操作係へ通知し、未発話の台詞を推測で飛ばさない
 - **起動処理の世代管理**（`liveavatar-session-manager.js`）: Start 中の Stop 割り込みで sessionId が失われないようにしている
 - ブラウザ側とサーバー側で二重に防いでいる箇所は、**両方**残すこと（片方の実装を「重複」として消さない）
 

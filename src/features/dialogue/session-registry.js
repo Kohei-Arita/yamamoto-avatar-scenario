@@ -1,7 +1,7 @@
 // このサーバーが発行したLiveAvatarセッションIDの登録簿。
 // 対話API(bind/respond)は、登録済みセッションIDのみ受け付けることで、
 // 公開URLへの野良リクエストで台本が進行してしまう事故を防ぐ。
-// 一度もセッションを発行していない状態(ローカル開発・テスト)では制限しない。
+// 未指定ID・未登録IDは、起動直後も拒否する。認証は別の共通ミドルウェアで行う。
 
 const MAX_KNOWN_SESSIONS = 50;
 
@@ -12,7 +12,7 @@ export function isRegisteredSessionId(sessionId) {
 }
 
 export function registerKnownSessionId(sessionId) {
-  if (!sessionId) {
+  if (typeof sessionId !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/u.test(sessionId)) {
     return;
   }
 
@@ -25,15 +25,5 @@ export function registerKnownSessionId(sessionId) {
 }
 
 export function isAllowedDialogueSession(sessionId) {
-  // sessionId未指定はサーバー側で直近のbind済みセッションへフォールバックされる
-  // 正常系のため拒否しない。拒否するのは「明示的に指定された未知のID」のみ。
-  if (!sessionId) {
-    return true;
-  }
-
-  if (knownSessionIds.size === 0) {
-    return true;
-  }
-
-  return knownSessionIds.has(sessionId);
+  return isRegisteredSessionId(sessionId);
 }

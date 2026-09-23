@@ -94,6 +94,66 @@ test("症状ありと答えた場合はredirect経由でVoting①待機に合流
   assert.equal(result.nodeId, "s1_voting1_wait");
 });
 
+test("否定文・保留依頼・台本外質問をキーワードだけで進めない", async () => {
+  const engine = createScenarioEngine({ scenario });
+  const sessionId = newSessionId();
+  engine.jumpTo(sessionId, "s1_symptoms");
+  const denied = await engine.handlePatientUtterance(sessionId, "咳も痰もありません");
+  assert.equal(denied.intent, "no_symptoms");
+  engine.jumpTo(sessionId, "s1_close");
+  const paused = await engine.handlePatientUtterance(sessionId, "まだ画像を提示しないでください");
+  assert.equal(paused.nodeId, "s1_close");
+  assert.equal(paused.deviation, "pause");
+  engine.jumpTo(sessionId, "s2_pathology");
+  const fees = await engine.handlePatientUtterance(sessionId, "手術の費用はいくらですか");
+  assert.equal(fees.deviation, "medical_advice");
+  assert.equal(fees.nodeId, "s2_pathology");
+  assert.deepEqual(engine.repeat(sessionId).lines, fees.lines);
+});
+
+test("patient_anyでも聞き直しと待機希望は進行を消費しない", async () => {
+  const engine = createScenarioEngine({ scenario });
+  const sessionId = newSessionId();
+  const question = engine.getNodeLines(sessionId).lines;
+  const repeated = await engine.handlePatientUtterance(sessionId, "もう一度お願いします");
+  assert.equal(repeated.nodeId, "s1_greeting");
+  assert.deepEqual(repeated.lines, question);
+  assert.equal(
+    (await engine.handlePatientUtterance(sessionId, "少し待ってください")).nodeId,
+    "s1_greeting"
+  );
+});
+
+test("日常の希望に含まれる『もう一度』は聞き直しと誤認せず、雑談には現在の質問を戻す", async () => {
+  const engine = createScenarioEngine({ scenario });
+  const sessionId = newSessionId();
+  engine.jumpTo(sessionId, "s2_values_risk_ack");
+  const wish = await engine.handlePatientUtterance(sessionId, "もう一度家族と旅行をしたいです");
+  assert.equal(wish.nodeId, "s2_voting2_wait");
+  engine.jumpTo(sessionId, "s1_symptoms");
+  const chat = await engine.handlePatientUtterance(sessionId, "今日はいい天気ですね");
+  assert.equal(chat.deviation, "off_topic");
+  assert.equal(chat.lines.length, 2);
+  assert.equal(chat.nodeId, "s1_symptoms");
+});
+
+test("サーバー復旧待ちはジャンプかリセットでのみ解除し、旧世代の発話を拒否する", async () => {
+  const engine = createScenarioEngine({ scenario });
+  const sessionId = newSessionId();
+  const state = engine.requireRecovery(sessionId);
+  assert.equal(state.recoveryRequired, true);
+  assert.equal(state.acceptsPatientInput, false);
+  assert.deepEqual(engine.getNodeLines(sessionId).lines, []);
+  assert.throws(() => engine.setInputPaused(sessionId, false), /ジャンプ/u);
+  engine.jumpTo(sessionId, "s1_symptoms");
+  assert.equal(engine.getInputState(sessionId).recoveryRequired, false);
+  assert.equal(engine.getInputState(sessionId).acceptsPatientInput, true);
+  const stale = await engine.handlePatientUtterance(sessionId, "はい", {
+    expectedEpoch: "previous-process"
+  });
+  assert.equal(stale.kind, "superseded");
+});
+
 test("operator遷移待ちノードで患者が発話するとhold応答を返し、状態は動かない", async () => {
   const engine = createScenarioEngine({ scenario });
   const sessionId = newSessionId();

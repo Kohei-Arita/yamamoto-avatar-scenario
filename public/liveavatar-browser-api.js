@@ -113,7 +113,7 @@ export async function fetchLiveAvatarConfig(options = {}) {
 export async function respondWithDialogueStream(
   sessionId,
   text,
-  { signal, revision = false, expectedVersion, onEvent = () => {} } = {}
+  { signal, revision = false, expectedVersion, expectedEpoch, onEvent = () => {} } = {}
 ) {
   const response = await fetch("/api/dialogue/respond/stream", {
     method: "POST",
@@ -123,7 +123,7 @@ export async function respondWithDialogueStream(
     headers: {
       "content-type": "application/json"
     },
-    body: JSON.stringify({ sessionId, text, revision, expectedVersion })
+    body: JSON.stringify({ sessionId, text, revision, expectedVersion, expectedEpoch })
   });
 
   if (!response.ok) {
@@ -202,11 +202,20 @@ export async function bindDialogueSession(sessionId, options = {}) {
   return postJson("/api/dialogue/session", { sessionId }, "dialogue session bind failed", options);
 }
 
-export function pauseDialogueInput(sessionId, expectedVersion, options = {}) {
+export function pauseDialogueInput(sessionId, expectedVersion, { expectedEpoch, ...options } = {}) {
   return postJson(
     "/api/dialogue/input-timeout",
-    { sessionId, expectedVersion },
+    { sessionId, expectedVersion, expectedEpoch },
     "音声入力の停止状態を同期できませんでした。操作係の再発話または入力停止・再開で復帰してください",
+    options
+  );
+}
+
+export function reportPlaybackState(sessionId, status, options = {}) {
+  return postJson(
+    "/api/dialogue/playback",
+    { sessionId, ...status },
+    "会場音声の状態を同期できませんでした",
     options
   );
 }
@@ -215,10 +224,10 @@ export function pauseDialogueInput(sessionId, expectedVersion, options = {}) {
 // サーバーからpush受信するためのSSEチャンネル。
 export function subscribeDialogueEvents(
   sessionId,
-  { onSpeechSegment = () => {}, onState = () => {}, onConnectionChange = () => {} } = {}
+  { epoch, onSpeechSegment = () => {}, onState = () => {}, onConnectionChange = () => {} } = {}
 ) {
   const source = new EventSource(
-    `/api/dialogue/events?sessionId=${encodeURIComponent(sessionId || "")}`
+    `/api/dialogue/events?sessionId=${encodeURIComponent(sessionId || "")}&epoch=${encodeURIComponent(epoch || "")}`
   );
 
   source.addEventListener("connected", (event) => {
@@ -237,6 +246,9 @@ export function subscribeDialogueEvents(
     }
     if (data?.speechText || data?.text) {
       onSpeechSegment({
+        speechId: data.speechId,
+        segmentIndex: data.segmentIndex,
+        segmentCount: data.segmentCount,
         state: data.state,
         replace: data.replace,
         speechText: data.speechText || data.text || "",

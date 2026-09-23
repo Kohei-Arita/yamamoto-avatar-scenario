@@ -4,10 +4,15 @@ import {
   getOrCreateScenarioSession,
   moveScenarioSession,
   resetScenarioSession,
-  rewindLastPatientMove
+  rewindLastPatientMove,
+  rememberScenarioSpeech
 } from "./scenario.store.js";
 import { matchIntent } from "./intent-matcher.js";
-import { buildDeviationLines, classifyDeviation } from "./deviation-handler.js";
+import {
+  buildDeviationLines,
+  classifyDeviation,
+  classifyUtteranceControl
+} from "./deviation-handler.js";
 import { isSubstantiveUtterance } from "./utterance-filter.js";
 
 function getNode(scenario, nodeId) {
@@ -57,6 +62,9 @@ export function createScenarioEngine({ scenario = null } = {}) {
     return {
       nodeId: session.nodeId,
       version: session.version,
+      epoch: session.epoch,
+      speechId: session.speechId,
+      recoveryRequired: session.recoveryRequired,
       inputPaused: session.inputPaused,
       acceptsPatientInput:
         !session.inputPaused &&
@@ -85,14 +93,15 @@ export function createScenarioEngine({ scenario = null } = {}) {
       })),
       isTerminal: (node?.advance || []).length === 0,
       allNodeIds: currentScenario.nodes.map((candidate) => candidate.id),
-      history: session.history
+      history: session.history,
+      playback: session.playback
     };
   }
 
   async function handlePatientUtterance(
     sessionId,
     text,
-    { revision = false, expectedVersion, signal } = {}
+    { revision = false, expectedVersion, expectedEpoch, signal } = {}
   ) {
     const currentScenario = resolveScenario();
     const session = getOrCreateScenarioSession(sessionId, currentScenario.entryNode);
@@ -107,6 +116,7 @@ export function createScenarioEngine({ scenario = null } = {}) {
     });
 
     signal?.throwIfAborted();
+    if (expectedEpoch && expectedEpoch !== session.epoch) return noSpeech("superseded");
     if (
       expectedVersion !== undefined &&
       expectedVersion !== session.version &&
@@ -163,6 +173,33 @@ export function createScenarioEngine({ scenario = null } = {}) {
     }
 
     const anyEntry = getAdvanceEntries(node, "patient_any")[0];
+    const intentEntries = getAdvanceEntries(node, "patient_intent");
+    const control = classifyUtteranceControl(text);
+
+    function deviationResult(category) {
+      const lines =
+        category === "repeat"
+          ? getNodeLines(sessionId).lines
+          : buildDeviationLines(category, node, currentScenario);
+      rememberScenarioSpeech(session, lines);
+      session.lastPatientMove = {
+        fromNodeId: node.id,
+        fromVersion: session.version,
+        at: Date.now()
+      };
+      return {
+        kind: "deviation",
+        deviation: category,
+        nodeId: node.id,
+        scene: node.scene,
+        intent: null,
+        state: getInputState(sessionId),
+        lines
+      };
+    }
+
+    // 「待って」「もう一度」を患者の回答として消費しない。
+    if ((anyEntry || intentEntries.length) && control) return deviationResult(control);
 
     if (anyEntry) {
       const { lines, nodeId } = collectLinesFrom(currentScenario, anyEntry.next);
@@ -179,9 +216,11 @@ export function createScenarioEngine({ scenario = null } = {}) {
       };
     }
 
-    const intentEntries = getAdvanceEntries(node, "patient_intent");
-
     if (intentEntries.length > 0) {
+      const category = classifyDeviation(text);
+      // 「手術の費用」などは単語一致より先に台本外の質問として扱う。
+      if (category === "medical_advice" || category === "case_conflict")
+        return deviationResult(category);
       const version = session.version;
       const match = await matchIntent(text, intentEntries, {
         doctorLine: node.doctorLines.at(-1) || "",
@@ -221,18 +260,15 @@ export function createScenarioEngine({ scenario = null } = {}) {
         };
       }
 
-      const category = classifyDeviation(text);
-      session.lastPatientMove = { fromNodeId: node.id, fromVersion: version, at: Date.now() };
-
-      return {
-        kind: "deviation",
-        deviation: category,
-        nodeId: node.id,
-        scene: node.scene,
-        intent: null,
-        state: getInputState(sessionId),
-        lines: buildDeviationLines(category, node, currentScenario)
-      };
+      // 候補語はあるが否定・競合で分類できなければ聞き直す。
+      // 雑談なら従来どおり受け止めてから現在の質問へ戻す。
+      const normalized = String(text).normalize("NFKC").toLowerCase();
+      const mentionsCandidate = intentEntries.some((entry) =>
+        (entry.keywords || []).some((word) =>
+          normalized.includes(word.normalize("NFKC").toLowerCase())
+        )
+      );
+      return deviationResult(mentionsCandidate ? "unclear" : category);
     }
 
     // operator遷移待ちノードで患者が発話した場合は待機応答
@@ -355,7 +391,11 @@ export function createScenarioEngine({ scenario = null } = {}) {
       kind: "say",
       nodeId: node.id,
       scene: node.scene ?? null,
-      lines: !nodeId && session.lastSpeechLines.length ? session.lastSpeechLines : node.doctorLines
+      lines: session.recoveryRequired
+        ? []
+        : !nodeId && session.lastSpeechLines.length
+          ? session.lastSpeechLines
+          : node.doctorLines
     };
   }
 
@@ -368,9 +408,31 @@ export function createScenarioEngine({ scenario = null } = {}) {
 
   function setInputPaused(sessionId, paused) {
     const session = getOrCreateScenarioSession(sessionId, resolveScenario().entryNode);
+    if (!paused && session.recoveryRequired) {
+      const error = new Error(
+        "サーバー再起動後はジャンプで中断位置を指定するか、リセットしてください。"
+      );
+      error.status = 409;
+      throw error;
+    }
     session.inputPaused = paused;
     moveScenarioSession(session, session.nodeId, "operator:input", session.lastSpeechLines);
     return getInputState(sessionId);
+  }
+
+  function requireRecovery(sessionId) {
+    const session = getOrCreateScenarioSession(sessionId, resolveScenario().entryNode);
+    session.inputPaused = true;
+    session.recoveryRequired = true;
+    session.lastPatientMove = null;
+    return getInputState(sessionId);
+  }
+
+  function reportPlayback(sessionId, { status, message, sequence, expectedEpoch }) {
+    const session = getOrCreateScenarioSession(sessionId, resolveScenario().entryNode);
+    if (expectedEpoch !== session.epoch || sequence <= session.playback.sequence) return false;
+    session.playback = { status, message, sequence, updatedAt: new Date().toISOString() };
+    return true;
   }
 
   // セッション再接続時に旧セッションの進行を新セッションへ引き継ぐ。
@@ -390,7 +452,9 @@ export function createScenarioEngine({ scenario = null } = {}) {
     getNodeLines,
     repeat,
     setInputPaused,
-    adoptProgress
+    adoptProgress,
+    requireRecovery,
+    reportPlayback
   };
 }
 

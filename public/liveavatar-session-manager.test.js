@@ -34,7 +34,13 @@ function fixture(overrides = {}) {
   const stopped = [];
   const disconnected = [];
   let count = 0;
-  const state = { version: 4, nodeId: "s1_adl", acceptsPatientInput: true };
+  const state = {
+    epoch: "original-server",
+    speechId: "initial-speech",
+    version: 4,
+    nodeId: "s1_adl",
+    acceptsPatientInput: true
+  };
   const api = {
     fetchLiveAvatarConfig: async () => ({ selfControlled: true, allowInterrupt: false }),
     ensureMicrophoneAccess: async () => {},
@@ -261,4 +267,144 @@ test("マイクの許可待ちでもStopで起動を中断できる", async () =
   await assert.rejects(starting);
   assert.equal(manager.getSessionId(), null);
   assert.deepEqual(stopped, []);
+});
+
+function finishSpeech(room) {
+  const speech = room.commands.filter((event) => event.event_type === "avatar.speak_text").at(-1);
+  for (const event_type of ["avatar.speak_started", "avatar.speak_ended"]) {
+    room.callbacks.onDataReceived(
+      new TextEncoder().encode(JSON.stringify({ event_type, source_event_id: speech.event_id })),
+      null,
+      null,
+      "agent-response"
+    );
+  }
+}
+
+test("同じ進行番号で再接続しても、一部だけ受信した台詞を全体で回収する", async () => {
+  const { manager, rooms, sources, state } = fixture();
+  await manager.start();
+  const room = rooms[0];
+  finishSpeech(room);
+  await tick();
+  const next = { ...state, version: 5, speechId: "next-speech" };
+  const openingSegments = ["説明の一文目です。", "重要な二文目です。"].map(
+    (speechText, segmentIndex) => ({
+      speechText,
+      state: next,
+      speechId: next.speechId,
+      segmentIndex,
+      segmentCount: 2,
+      replace: segmentIndex === 0
+    })
+  );
+  sources[0].callbacks.onSpeechSegment(openingSegments[0]);
+  await tick();
+  assert.equal(
+    room.commands.some((event) => event.text === openingSegments[0].speechText),
+    false
+  );
+  assert.equal(room.mic.at(-1), false);
+  sources[0].callbacks.onConnectionChange(false);
+  sources[0].callbacks.onConnectionChange(true, { state: next, openingSegments });
+  await new Promise((resolve) => setTimeout(resolve, 280));
+  assert.equal(room.commands.at(-1).text, openingSegments[0].speechText);
+  finishSpeech(room);
+  await tick();
+  assert.equal(room.commands.at(-1).text, openingSegments[1].speechText);
+  assert.equal(room.mic.at(-1), false);
+  finishSpeech(room);
+  await tick();
+  assert.equal(room.mic.at(-1), true);
+  const spoken = room.commands.length;
+  sources[0].callbacks.onConnectionChange(false);
+  sources[0].callbacks.onConnectionChange(true, { state: next, openingSegments });
+  await tick();
+  assert.equal(room.commands.length, spoken, "受信済みの台詞は再接続だけで重複再生しない");
+});
+
+test("サーバー世代が変われば低い進行番号で同期し、操作係のジャンプから復帰する", async () => {
+  const { manager, rooms, sources, state } = fixture();
+  await manager.start();
+  const room = rooms[0];
+  finishSpeech(room);
+  await tick();
+  sources[0].callbacks.onConnectionChange(false);
+  const resetState = {
+    ...state,
+    epoch: "restarted-server",
+    version: 0,
+    inputPaused: true,
+    recoveryRequired: true,
+    acceptsPatientInput: false,
+    speechId: "recovery"
+  };
+  sources[0].callbacks.onConnectionChange(true, { state: resetState, openingSegments: [] });
+  await tick();
+  assert.equal(room.mic.at(-1), false);
+  sources[0].callbacks.onSpeechSegment({
+    state,
+    speechText: "旧サーバーの遅着です。",
+    replace: true
+  });
+  const jumped = {
+    ...resetState,
+    version: 1,
+    inputPaused: false,
+    recoveryRequired: false,
+    acceptsPatientInput: true,
+    speechId: "jumped"
+  };
+  sources[0].callbacks.onSpeechSegment({
+    state: jumped,
+    speechId: "jumped",
+    segmentIndex: 0,
+    segmentCount: 1,
+    speechText: "中断位置の質問です。",
+    replace: true
+  });
+  await new Promise((resolve) => setTimeout(resolve, 280));
+  assert.equal(room.commands.at(-1).text, "中断位置の質問です。");
+  assert.equal(
+    room.commands.some((event) => event.text === "旧サーバーの遅着です。"),
+    false
+  );
+  finishSpeech(room);
+  await tick();
+  assert.equal(room.mic.at(-1), true);
+});
+
+test("起動準備中にサーバーが再起動しても、同じversionの旧挨拶を再生しない", async () => {
+  const { manager, api, rooms, sources, state } = fixture();
+  state.version = 0;
+  const connect = api.connectLiveKitRoom;
+  let audioReady;
+  api.connectLiveKitRoom = (callbacks) =>
+    connect({
+      ...callbacks,
+      attachTrack: (...args) => {
+        audioReady = () => callbacks.attachTrack(...args);
+      }
+    });
+  const starting = manager.start();
+  await tick();
+  sources[0].callbacks.onConnectionChange(false);
+  sources[0].callbacks.onConnectionChange(true, {
+    state: {
+      ...state,
+      epoch: "restarted-server",
+      speechId: "recovery",
+      inputPaused: true,
+      recoveryRequired: true,
+      acceptsPatientInput: false
+    },
+    openingSegments: []
+  });
+  audioReady();
+  await starting;
+  assert.equal(
+    rooms[0].commands.some((event) => event.event_type === "avatar.speak_text"),
+    false
+  );
+  assert.equal(rooms[0].mic.includes(true), false);
 });

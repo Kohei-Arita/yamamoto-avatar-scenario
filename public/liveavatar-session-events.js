@@ -1,4 +1,5 @@
 import { createSelfControlledConversation } from "./liveavatar-self-controller.js";
+import { createSpeechBatchBuffer } from "./speech-batch.js";
 
 const AGENT_RESPONSE_TOPIC = "agent-response";
 
@@ -34,6 +35,7 @@ export function createSelfControlledSession({
   onAnswer = () => {},
   onError = () => {},
   onInputTimeout = async () => {},
+  onPlaybackState = () => {},
   onMicStateChange = () => {},
   microphoneInitiallyMuted = false
 } = {}) {
@@ -50,36 +52,49 @@ export function createSelfControlledSession({
     onMicStateChange,
     onInputTimeout,
     microphoneInitiallyMuted,
-    respondToTextStream: ({
+    respondToTextStream: async ({
       sessionId,
       text,
       revision,
       expectedVersion,
+      expectedEpoch,
       signal,
       onSpeechSegment
-    }) =>
-      respondWithDialogueStream(sessionId, text, {
+    }) => {
+      const buffer = createSpeechBatchBuffer();
+      const result = await respondWithDialogueStream(sessionId, text, {
         signal,
         revision,
         expectedVersion,
+        expectedEpoch,
         onEvent: async (event) => {
           if (event.type === "speech_segment" && (event.data?.speechText || event.data?.text)) {
-            await onSpeechSegment({
+            const batch = buffer.add({
+              speechId: event.data.speechId,
+              segmentIndex: event.data.segmentIndex,
+              segmentCount: event.data.segmentCount,
               state: event.data.state,
               speechText: event.data?.speechText || event.data?.text || "",
               subtitleText:
                 event.data?.subtitleText || event.data?.speechText || event.data?.text || ""
             });
+            if (batch) for (const segment of batch) await onSpeechSegment(segment);
           }
         }
-      }),
+      });
+      if (buffer.incomplete)
+        throw new Error("台詞を最後まで受信できませんでした。操作画面から再発話してください。");
+      return result;
+    },
     onLog,
     onAnswer,
     onSpeechStart: (text) => {
       subtitleController?.set(text);
+      onPlaybackState("speaking");
     },
     onSpeechIdle: () => {
       subtitleController?.clearSoon();
+      onPlaybackState("idle");
     },
     onSpeechReset: () => {
       subtitleController?.clearNow();

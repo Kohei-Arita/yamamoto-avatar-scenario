@@ -70,8 +70,19 @@ export function toSpeechSegments(content) {
   return segments;
 }
 
+export function toSpeechBatch(content, state) {
+  const segments = toSpeechSegments(content);
+  return segments.map((segment, segmentIndex) => ({
+    ...segment,
+    state,
+    speechId: state.speechId,
+    segmentIndex,
+    segmentCount: segments.length
+  }));
+}
+
 async function buildScenarioReply(
-  { text, sessionId, revision = false, expectedVersion } = {},
+  { text, sessionId, revision = false, expectedVersion, expectedEpoch } = {},
   { signal } = {}
 ) {
   const startedAt = Date.now();
@@ -91,7 +102,7 @@ async function buildScenarioReply(
   const engineResult = await engine.handlePatientUtterance(
     resolvedSessionId,
     transcript.normalizedText,
-    { revision, expectedVersion: requestVersion, signal }
+    { revision, expectedVersion: requestVersion, expectedEpoch, signal }
   );
 
   let {
@@ -102,7 +113,10 @@ async function buildScenarioReply(
 
   signal?.throwIfAborted();
   const currentState = engine.getInputState(resolvedSessionId);
-  if (engineResult.state.version !== currentState.version) {
+  if (
+    engineResult.state.version !== currentState.version ||
+    engineResult.state.speechId !== currentState.speechId
+  ) {
     content = "";
     engineResult.kind = "superseded";
     engineResult.lines = [];
@@ -156,8 +170,8 @@ export async function streamScenarioReply(
 ) {
   const result = await buildScenarioReply(request, { signal });
 
-  for (const segment of toSpeechSegments(result.content)) {
-    await onSpeechSegment({ ...segment, state: result.engineResult.state });
+  for (const segment of toSpeechBatch(result.content, result.engineResult.state)) {
+    await onSpeechSegment(segment);
   }
 
   return result;
@@ -193,7 +207,7 @@ export function bindDialogueSession(sessionId) {
     state.version === 0 && env.liveAvatarOpeningGreeting
       ? env.liveAvatarOpeningGreeting
       : lines.join("\n");
-  return { ...conversation, state, openingSegments: toSpeechSegments(openingText) };
+  return { ...conversation, state, openingSegments: toSpeechBatch(openingText, state) };
 }
 
 // operator操作(branch/next/jump/reset/say)の結果セリフを、
@@ -201,8 +215,8 @@ export function bindDialogueSession(sessionId) {
 export function deliverOperatorSpeech(sessionId, engineResult, { action } = {}) {
   const resolvedSessionId = resolveSessionId(sessionId);
   const content = (engineResult.lines || []).join("\n");
-  const segments = toSpeechSegments(content);
   const state = getScenarioEngine().getInputState(resolvedSessionId);
+  const segments = toSpeechBatch(content, state);
   const subscriberCount = broadcastSpeechSegments(resolvedSessionId, segments, state);
 
   appendDialogueLog({

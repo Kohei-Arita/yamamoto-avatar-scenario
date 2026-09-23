@@ -3,6 +3,7 @@ import { createMicrophoneController } from "./microphone-controller.js";
 import { createEchoGuard } from "./transcript-echo-guard.js";
 import { isSubstantiveTranscript } from "./transcript-filter.js";
 import { createUserTurnDetector, MAX_USER_TURN_MS } from "./user-turn-detector.js";
+import { withOperationTimeout } from "./operation-timeout.js";
 
 const AGENT_CONTROL_TOPIC = "agent-control";
 
@@ -76,6 +77,8 @@ export function createSelfControlledConversation({
   // 患者の声が二度と届かなくなるため、必ず再試行して実状態を追いつかせる。
   micSyncRetryMs = 500,
   micSyncMaxRetries = 5,
+  controlPublishTimeoutMs = 8000,
+  micSyncTimeoutMs = 8000,
   echoGuard = createEchoGuard(),
   onLog = () => {},
   onAnswer = () => {},
@@ -107,6 +110,7 @@ export function createSelfControlledConversation({
   let inputEnabled = true;
   let transportReady = true;
   let scenarioVersion;
+  let scenarioEpoch;
   let speechFault = false;
   // response: 上限到達後の応答が終わるまで閉じる。operator: 聞き取りなしで操作待ち。
   let inputCutoff = null;
@@ -115,6 +119,7 @@ export function createSelfControlledConversation({
     initialMuted: microphoneInitiallyMuted,
     retryMs: micSyncRetryMs,
     maxRetries: micSyncMaxRetries,
+    timeoutMs: micSyncTimeoutMs,
     onLog,
     onState: onMicStateChange,
     onError
@@ -151,7 +156,17 @@ export function createSelfControlledConversation({
     );
   }
 
-  // speak_ended が届かない場合に、推定発話時間の経過後にキューを強制前進させる。
+  function pauseForSpeechFault(message) {
+    speechFault = true;
+    cancelCurrentResponse({ syncMicrophone: false });
+    clearBuffer();
+    clearRecentFinalizedTranscript();
+    syncMicrophoneMuteState();
+    onMicStateChange("error");
+    onError(new Error(message));
+  }
+
+  // 終了通知がない台詞を「聞こえた」とは見なさず、操作係の再発話を待つ。
   function startSpeakEndWatchdog(segment) {
     clearTimeout(speakEndWatchdogTimer);
     speakEndWatchdogTimer = setTimeout(() => {
@@ -162,23 +177,15 @@ export function createSelfControlledConversation({
       }
 
       onLog(`watchdog.speak_end_timeout: ${segment.speechText}`);
-      activeSpeechSegment = null;
-      isSpeaking = false;
-      syncMicrophoneMuteState();
-
-      if (speechQueue.length === 0 && !pendingSpeechSegment) {
-        onSpeechIdle();
-      }
-
-      dispatchNextSpeech().catch((error) => {
-        onError(error);
-      });
+      pauseForSpeechFault(
+        "アバターの発話終了を確認できません。実音を確認し、操作画面から再発話してください。"
+      );
     }, estimateSpeechDurationMs(segment.speechText));
   }
 
   // speak_started が届かない場合の保険。
   // 1回目: speak_textコマンド自体が失われた可能性(エージェント入室前など)があるため再送する。
-  // 2回目: 発話中とみなしてキューを止めない。
+  // 2回目: 発話したと推測して台詞を飛ばさず、入力を閉じて操作係へ通知する。
   function startSpeakStartWatchdog(segment) {
     clearTimeout(speakStartWatchdogTimer);
     speakStartWatchdogTimer = setTimeout(() => {
@@ -200,12 +207,9 @@ export function createSelfControlledConversation({
       }
 
       onLog(`watchdog.speak_start_timeout: ${segment.speechText}`);
-      pendingSpeechSegment = null;
-      activeSpeechSegment = segment;
-      isSpeaking = true;
-      syncMicrophoneMuteState();
-      onSpeechStart(segment.subtitleText || segment.speechText || "");
-      startSpeakEndWatchdog(segment);
+      pauseForSpeechFault(
+        "アバターの発話開始を確認できません。実音を確認し、操作画面から再発話してください。"
+      );
     }, speakStartTimeoutMs);
   }
 
@@ -329,9 +333,11 @@ export function createSelfControlledConversation({
 
   function applyScenarioState(state) {
     if (!state || disposed) return !disposed;
+    if (scenarioEpoch && state.epoch && scenarioEpoch !== state.epoch) return false;
     if (scenarioVersion !== undefined && state.version < scenarioVersion) return false;
     if (inputCutoff === "operator" && state.version > scenarioVersion) inputCutoff = null;
     scenarioVersion = state.version;
+    scenarioEpoch = state.epoch || scenarioEpoch;
     inputEnabled = state.acceptsPatientInput !== false;
     if (!inputEnabled) {
       clearBuffer();
@@ -339,6 +345,19 @@ export function createSelfControlledConversation({
     }
     syncMicrophoneMuteState();
     return true;
+  }
+
+  function recoverScenarioState(state) {
+    // プロセス再起動の同期に限り世代を切り替える。旧応答・キューはすべて取り消す。
+    cancelCurrentResponse({ syncMicrophone: false });
+    clearBuffer();
+    clearRecentFinalizedTranscript();
+    echoGuard.reset();
+    scenarioEpoch = state.epoch;
+    scenarioVersion = undefined;
+    speechFault = false;
+    inputCutoff = null;
+    return applyScenarioState(state);
   }
 
   function setTransportReady(ready) {
@@ -385,10 +404,23 @@ export function createSelfControlledConversation({
 
     const payload = new TextEncoder().encode(JSON.stringify(event));
 
-    await room.localParticipant.publishData(payload, {
-      reliable: true,
-      topic: AGENT_CONTROL_TOPIC
-    });
+    try {
+      await withOperationTimeout(
+        room.localParticipant.publishData(payload, {
+          reliable: true,
+          topic: AGENT_CONTROL_TOPIC
+        }),
+        controlPublishTimeoutMs,
+        "音声コマンドの送信が完了しませんでした。再接続してください。"
+      );
+    } catch (error) {
+      if (error.requiresReconnect && !disposed) {
+        speechFault = true;
+        syncMicrophoneMuteState();
+        onError(error);
+      }
+      throw error;
+    }
   }
 
   async function dispatchNextSpeech() {
@@ -446,7 +478,7 @@ export function createSelfControlledConversation({
       if (disposed || nextSpeech.generationId !== generationId) return;
       pendingSpeechSegment = null;
       nextSpeech.publishFailures = (nextSpeech.publishFailures || 0) + 1;
-      if (nextSpeech.publishFailures < 3) {
+      if (!error.requiresReconnect && nextSpeech.publishFailures < 3) {
         speechQueue.unshift(nextSpeech);
         scheduleDispatchRetry(1000);
       } else {
@@ -543,6 +575,7 @@ export function createSelfControlledConversation({
         text: combinedText,
         revision: isRevision,
         expectedVersion: scenarioVersion,
+        expectedEpoch: scenarioEpoch,
         signal: streamAbortController.signal,
         onSpeechSegment: async (segment) => {
           if (currentGenerationId !== generationId || !applyScenarioState(segment.state)) {
@@ -570,8 +603,15 @@ export function createSelfControlledConversation({
         return;
       }
 
-      const aborted = streamAbortController?.signal.aborted || error.name === "AbortError";
+      const aborted = Boolean(streamAbortController?.signal.aborted);
       isGenerating = false;
+      // サーバー側だけ進んだ可能性がある。途中まで届いた説明のまま次の回答を受けない。
+      if (!aborted) {
+        speechFault = true;
+        clearSpeechState();
+        clearRecentFinalizedTranscript();
+        onMicStateChange("error");
+      }
       syncMicrophoneMuteState();
       streamAbortController = null;
       if (!aborted) onError(error);
@@ -590,7 +630,9 @@ export function createSelfControlledConversation({
       clearRecentFinalizedTranscript();
       syncMicrophoneMuteState();
       onLog("user.turn.input_paused: 30秒以内に有効な文字起こしがなく、操作係の再開を待ちます");
-      Promise.resolve(onInputTimeout({ expectedVersion: scenarioVersion })).catch(onError);
+      Promise.resolve(
+        onInputTimeout({ expectedVersion: scenarioVersion, expectedEpoch: scenarioEpoch })
+      ).catch(onError);
       return;
     }
     flushBufferedTranscripts({ capped }).catch(onError);
@@ -702,6 +744,8 @@ export function createSelfControlledConversation({
       }
 
       const speechSegment = pendingSpeechSegment;
+      echoGuard.rememberAvatarSpeech(speechSegment.speechText);
+      echoGuard.rememberAvatarSpeech(speechSegment.subtitleText);
       pendingSpeechSegment = null;
       activeSpeechSegment = speechSegment;
       isSpeaking = true;
@@ -733,6 +777,8 @@ export function createSelfControlledConversation({
         return;
       }
 
+      echoGuard.rememberAvatarSpeech(activeSpeechSegment.speechText);
+      echoGuard.rememberAvatarSpeech(activeSpeechSegment.subtitleText);
       activeSpeechSegment = null;
       isSpeaking = false;
       syncMicrophoneMuteState();
@@ -759,6 +805,7 @@ export function createSelfControlledConversation({
   }
 
   async function receiveOperatorSegment(segment) {
+    if (scenarioEpoch && segment.state?.epoch && scenarioEpoch !== segment.state.epoch) return;
     if (disposed || (scenarioVersion !== undefined && segment.state?.version < scenarioVersion))
       return;
     if (segment.replace) {
@@ -786,6 +833,7 @@ export function createSelfControlledConversation({
 
   return {
     applyScenarioState,
+    recoverScenarioState,
     setTransportReady,
     receiveOperatorSegment,
     dispose,

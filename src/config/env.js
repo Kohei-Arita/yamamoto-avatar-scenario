@@ -58,7 +58,8 @@ const env = {
 export function assertRuntimeConfig() {
   const missing = [
     !env.liveAvatarApiKey && "LIVEAVATAR_API_KEY",
-    !env.liveAvatarAvatarId && "LIVEAVATAR_AVATAR_ID"
+    !env.liveAvatarAvatarId && "LIVEAVATAR_AVATAR_ID",
+    !env.operatorToken && "OPERATOR_TOKEN"
   ].filter(Boolean);
 
   if (missing.length > 0) {

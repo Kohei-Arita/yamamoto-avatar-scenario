@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import env from "../../config/env.js";
+import { registerKnownSessionId } from "./session-registry.js";
 
 // LLM・operator認証をテスト用に固定してからapp（route群）を読み込む
 env.scenarioIntentLlm = false;
@@ -9,6 +10,11 @@ env.scenarioSpeechMode = "fixed";
 env.operatorToken = "test-operator-token";
 
 const { default: app } = await import("../../app.js");
+const fetch = (url, options = {}) =>
+  globalThis.fetch(url, {
+    ...options,
+    headers: { authorization: `Bearer ${env.operatorToken}`, ...options.headers }
+  });
 
 let server = null;
 let baseUrl = "";
@@ -44,6 +50,7 @@ function parseSseEvents(rawText) {
 }
 
 async function postStream(sessionId, text) {
+  registerKnownSessionId(sessionId);
   const response = await fetch(`${baseUrl}/api/dialogue/respond/stream`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -55,6 +62,7 @@ async function postStream(sessionId, text) {
 
 test("SSEはspeech_segment→doneの順で応答する", async () => {
   const sessionId = "sse-compat-1";
+  registerKnownSessionId(sessionId);
 
   await fetch(`${baseUrl}/api/dialogue/session`, {
     method: "POST",
@@ -76,7 +84,17 @@ test("SSEはspeech_segment→doneの順で応答する", async () => {
 
   // 従来の発話フィールドに、入力の開閉と競合検出に使うstateを追加。
   for (const { data } of segmentEvents) {
-    assert.deepEqual(Object.keys(data).sort(), ["speechText", "state", "subtitleText", "text"]);
+    assert.deepEqual(Object.keys(data).sort(), [
+      "segmentCount",
+      "segmentIndex",
+      "speechId",
+      "speechText",
+      "state",
+      "subtitleText",
+      "text"
+    ]);
+    assert.equal(data.speechId, data.state.speechId);
+    assert.equal(data.segmentCount, segmentEvents.length);
     assert.equal(data.state.nodeId, "s1_symptoms");
     assert.equal(data.text, data.speechText);
     assert.ok(data.speechText.length > 0);
@@ -97,7 +115,7 @@ test("textなしは400を返す", async () => {
 });
 
 test("operator APIは認証なしで401、正しいBearerで200", async () => {
-  const noAuth = await fetch(`${baseUrl}/api/operator/state`);
+  const noAuth = await globalThis.fetch(`${baseUrl}/api/operator/state`);
   assert.equal(noAuth.status, 401);
 
   const wrongAuth = await fetch(`${baseUrl}/api/operator/state`, {
@@ -180,6 +198,7 @@ test("operatorの二重操作を進行番号で拒否し、入力停止はサー
 
 test("オペレーターSSEには置換フラグと入力状態を付ける", async () => {
   const sessionId = "operator-events-test";
+  registerKnownSessionId(sessionId);
   const controller = new AbortController();
   const response = await fetch(`${baseUrl}/api/dialogue/events?sessionId=${sessionId}`, {
     signal: controller.signal

@@ -1,0 +1,364 @@
+// 実ブラウザ + 実HTTP/SSE。LiveAvatar/LiveKitだけを模擬し、外部API・実マイクは使わない。
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import env from "../src/config/env.js";
+import { registerKnownSessionId } from "../src/features/dialogue/session-registry.js";
+
+env.operatorToken = "browser-smoke-test-token";
+env.scenarioIntentLlm = false;
+env.dialogueLlmTranscriptNormalizationEnabled = false;
+env.scenarioSpeechMode = "fixed";
+const { default: app } = await import("../src/app.js");
+const server = await new Promise((resolve) => {
+  const instance = app.listen(0, "127.0.0.1", () => resolve(instance));
+});
+const base = `http://127.0.0.1:${server.address().port}`;
+const profile = await mkdtemp(path.join(os.tmpdir(), "yamamoto-browser-smoke-"));
+const binary =
+  process.env.CHROME_BIN ||
+  (process.platform === "darwin"
+    ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    : "google-chrome");
+const chrome = spawn(
+  binary,
+  [
+    "--headless=new",
+    `--user-data-dir=${profile}`,
+    "--remote-debugging-port=0",
+    "--disable-background-networking",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-component-update",
+    "--autoplay-policy=no-user-gesture-required",
+    "--use-fake-device-for-media-stream",
+    "--use-fake-ui-for-media-stream",
+    "about:blank"
+  ],
+  { stdio: "ignore" }
+);
+let spawnError;
+chrome.on("error", (error) => {
+  spawnError = error;
+});
+const pages = [];
+const exceptions = [];
+const browserErrors = [];
+let issued = 0;
+
+async function until(check, label, timeout = 12_000) {
+  const end = Date.now() + timeout;
+  while (Date.now() < end) {
+    if (spawnError) throw spawnError;
+    const result = await check();
+    if (result) return result;
+    await delay(80);
+  }
+  throw new Error(`Timed out: ${label}`);
+}
+
+async function connect(url) {
+  const socket = new WebSocket(url);
+  await new Promise((resolve, reject) => {
+    socket.addEventListener("open", resolve, { once: true });
+    socket.addEventListener("error", reject, { once: true });
+  });
+  let sequence = 0;
+  const pending = new Map();
+  const handlers = new Map();
+  socket.addEventListener("message", (event) => {
+    const data = JSON.parse(event.data);
+    if (data.id) {
+      const request = pending.get(data.id);
+      if (!request) return;
+      pending.delete(data.id);
+      clearTimeout(request.timer);
+      if (data.error) request.reject(new Error(data.error.message));
+      else request.resolve(data.result);
+    } else {
+      const handler = handlers.get(data.method);
+      if (handler)
+        Promise.resolve(handler(data.params)).catch((error) => exceptions.push(error.message));
+    }
+  });
+  return {
+    send(method, params = {}) {
+      const id = ++sequence;
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          pending.delete(id);
+          reject(new Error(`CDP timeout: ${method}`));
+        }, 10_000);
+        pending.set(id, { resolve, reject, timer });
+        socket.send(JSON.stringify({ id, method, params }));
+      });
+    },
+    on(method, callback) {
+      handlers.set(method, callback);
+    },
+    close() {
+      for (const request of pending.values()) clearTimeout(request.timer);
+      socket.close();
+    }
+  };
+}
+
+function fakeLiveKit() {
+  window.__spoken = [];
+  window.__mic = false;
+  const RoomEvent = Object.fromEntries(
+    [
+      "Connected",
+      "Disconnected",
+      "TrackSubscribed",
+      "TrackUnsubscribed",
+      "DataReceived",
+      "ParticipantConnected",
+      "ParticipantDisconnected"
+    ].map((name) => [name, name])
+  );
+  class Room {
+    constructor() {
+      window.__room = this;
+      this.listeners = new Map();
+      this.remoteParticipants = new Map();
+      this.localParticipant = {
+        isSpeaking: false,
+        on() {},
+        off() {},
+        setMicrophoneEnabled: async (enabled) => {
+          window.__mic = enabled;
+        },
+        publishData: async (payload) => {
+          const event = JSON.parse(new TextDecoder().decode(payload));
+          if (event.event_type !== "avatar.speak_text") return;
+          window.__spoken.push(event.text);
+          setTimeout(
+            () =>
+              this.message({ event_type: "avatar.speak_started", source_event_id: event.event_id }),
+            5
+          );
+          setTimeout(
+            () =>
+              this.message({ event_type: "avatar.speak_ended", source_event_id: event.event_id }),
+            30
+          );
+        }
+      };
+    }
+    on(name, callback) {
+      this.listeners.set(name, callback);
+    }
+    message(event) {
+      this.listeners.get(RoomEvent.DataReceived)?.(
+        new TextEncoder().encode(JSON.stringify(event)),
+        null,
+        null,
+        "agent-response"
+      );
+    }
+    patient(text) {
+      for (const event of [
+        { event_type: "user.speak_started" },
+        { event_type: "user.transcription", text },
+        { event_type: "user.speak_ended" }
+      ])
+        this.message(event);
+    }
+    async connect() {
+      this.audio = new AudioContext();
+      const stream = this.audio.createMediaStreamDestination().stream;
+      const track = {
+        kind: "audio",
+        attach(element) {
+          element.srcObject = stream;
+        }
+      };
+      this.remoteParticipants.set("avatar", {
+        trackPublications: new Map([["audio", { isSubscribed: true, track }]])
+      });
+      this.listeners.get(RoomEvent.Connected)?.();
+    }
+    async disconnect() {
+      this.audio?.close();
+      this.listeners.get(RoomEvent.Disconnected)?.("client");
+    }
+  }
+  window.LivekitClient = { Room, RoomEvent, Track: { Kind: { Audio: "audio", Video: "video" } } };
+}
+
+try {
+  const port = await until(async () => {
+    try {
+      return Number(
+        (await readFile(path.join(profile, "DevToolsActivePort"), "utf8")).split("\n")[0]
+      );
+    } catch {
+      return null;
+    }
+  }, "Chrome start");
+
+  async function page(url) {
+    const target = await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, {
+      method: "PUT"
+    }).then((response) => response.json());
+    const client = await connect(target.webSocketDebuggerUrl);
+    pages.push(client);
+    const evaluate = async (expression) => {
+      const result = await client.send("Runtime.evaluate", {
+        expression,
+        returnByValue: true,
+        awaitPromise: true
+      });
+      if (result.exceptionDetails) throw new Error(result.exceptionDetails.text);
+      return result.result?.value;
+    };
+    client.on("Runtime.exceptionThrown", ({ exceptionDetails }) =>
+      exceptions.push(exceptionDetails.exception?.description || exceptionDetails.text)
+    );
+    client.on("Runtime.consoleAPICalled", ({ type, args }) => {
+      if (type === "error")
+        browserErrors.push(args.map((arg) => arg.description || arg.value || "").join(" "));
+    });
+    client.on("Fetch.requestPaused", async ({ requestId, request }) => {
+      const requested = new URL(request.url);
+      if (requested.origin !== base)
+        return client.send("Fetch.failRequest", { requestId, errorReason: "BlockedByClient" });
+      let body;
+      let type = "application/json";
+      if (requested.pathname.startsWith("/vendor/livekit-client/")) {
+        body = `(${fakeLiveKit.toString()})();`;
+        type = "text/javascript";
+      }
+      if (requested.pathname === "/api/liveavatar/session-token") {
+        const sessionId = `browser-smoke-${++issued}`;
+        registerKnownSessionId(sessionId);
+        body = JSON.stringify({
+          ok: true,
+          session_id: sessionId,
+          session_token: `mock-token-${issued}`
+        });
+      }
+      if (requested.pathname === "/api/liveavatar/start-session")
+        body = JSON.stringify({
+          ok: true,
+          livekit_url: "mock://local",
+          livekit_token: "mock",
+          raw: { max_session_duration: 300 }
+        });
+      if (
+        ["/api/liveavatar/stop-session", "/api/liveavatar/keep-alive"].includes(requested.pathname)
+      )
+        body = '{"ok":true}';
+      if (body !== undefined)
+        return client.send("Fetch.fulfillRequest", {
+          requestId,
+          responseCode: 200,
+          responseHeaders: [{ name: "content-type", value: type }],
+          body: Buffer.from(body).toString("base64")
+        });
+      return client.send("Fetch.continueRequest", { requestId });
+    });
+    await client.send("Runtime.enable");
+    await client.send("Page.enable");
+    await client.send("Fetch.enable", { patterns: [{ urlPattern: "*" }] });
+    await client.send("Page.navigate", { url });
+    return { client, evaluate };
+  }
+
+  const stage = await page(`${base}/xgate?autostart=1&controls=0&shortcuts=1`);
+  await until(
+    () =>
+      stage.evaluate(
+        "document.readyState === 'complete' && Boolean(document.querySelector('#accessForm button:not(:disabled)'))"
+      ),
+    "access form"
+  );
+  await stage.evaluate(
+    `document.querySelector('#accessToken').value = ${JSON.stringify(env.operatorToken)}; document.querySelector('#accessForm').requestSubmit();`
+  );
+  await until(
+    () =>
+      stage.evaluate(
+        "document.querySelector('#connectionState')?.textContent === 'connected' && window.__mic"
+      ),
+    "stage start"
+  );
+  await stage.evaluate("window.__room.patient('はい、よろしくお願いします。')");
+  await until(
+    () => stage.evaluate("window.__spoken.some(text => text.includes('体重減少')) && window.__mic"),
+    "natural greeting reply"
+  );
+  await stage.evaluate("window.__room.patient('咳も痰もありません。')");
+  await until(
+    () =>
+      stage.evaluate(
+        "window.__spoken.some(text => text.includes('症状はないけれど')) && window.__mic"
+      ),
+    "negated symptoms"
+  );
+
+  const operator = await page(`${base}/operator`);
+  await until(
+    () =>
+      operator.evaluate(
+        "document.readyState === 'complete' && Boolean(document.querySelector('#tokenInput'))"
+      ),
+    "operator form"
+  );
+  await operator.evaluate(
+    `document.querySelector('#tokenInput').value = ${JSON.stringify(env.operatorToken)}; document.querySelector('#connectBtn').click();`
+  );
+  await until(
+    () => operator.evaluate("document.querySelector('#stateNode').textContent.includes('s1_adl')"),
+    "operator state"
+  );
+  await operator.evaluate("document.querySelector('#inputBtn').click()");
+  await until(() => stage.evaluate("window.__mic === false"), "operator pause");
+  await operator.evaluate("document.querySelector('#inputBtn').click()");
+  await until(() => stage.evaluate("window.__mic === true"), "operator resume");
+  await stage.evaluate("document.dispatchEvent(new KeyboardEvent('keydown', { key: 's' }))");
+  assert.equal(
+    await stage.evaluate("document.querySelector('#connectionState').textContent"),
+    "connected"
+  );
+
+  const second = await page(`${base}/xgate?autostart=1`);
+  await until(
+    () =>
+      second.evaluate(
+        "document.querySelector('#videoPlaceholder')?.textContent.includes('再接続')"
+      ),
+    "second-tab rejection"
+  );
+  assert.equal(issued, 1, "二重起動ではLiveAvatarセッションを発行しない");
+  assert.deepEqual(exceptions, []);
+  console.log(
+    "Browser smoke passed: login, greeting, negation, operator pause/resume, stage shortcuts, Web Lock. External services mocked."
+  );
+} catch (error) {
+  for (const page of pages) {
+    const snapshot = await page
+      .send("Runtime.evaluate", {
+        expression:
+          "({ url: location.href, body: document.body?.innerText, mic: window.__mic, spoken: window.__spoken })",
+        returnByValue: true
+      })
+      .catch(() => null);
+    console.error("Browser diagnostic:", snapshot?.result?.value);
+  }
+  console.error({ issued, exceptions, browserErrors });
+  throw error;
+} finally {
+  for (const page of pages) page.close();
+  chrome.kill("SIGTERM");
+  server.closeAllConnections();
+  await new Promise((resolve) => server.close(resolve));
+  if (chrome.exitCode === null && !spawnError)
+    await Promise.race([new Promise((resolve) => chrome.once("exit", resolve)), delay(3000)]);
+  if (chrome.exitCode === null && !spawnError) chrome.kill("SIGKILL");
+  await rm(profile, { recursive: true, force: true });
+}

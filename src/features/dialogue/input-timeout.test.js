@@ -8,6 +8,11 @@ env.dialogueLlmTranscriptNormalizationEnabled = false;
 env.scenarioSpeechMode = "fixed";
 env.operatorToken = "input-timeout-test-token";
 const { default: app } = await import("../../app.js");
+const fetch = (url, options = {}) =>
+  globalThis.fetch(url, {
+    ...options,
+    headers: { authorization: `Bearer ${env.operatorToken}`, ...options.headers }
+  });
 let server;
 let baseUrl;
 
@@ -112,4 +117,29 @@ test("登録済みセッションと進行番号を要求し、Voting中の期�
   assert.equal(stopped.state.version, voting.state.version);
   assert.equal(stopped.state.inputPaused, false);
   assert.equal(stopped.state.acceptsPatientInput, false);
+});
+
+test("会場の発話通知・異常を操作画面へ反映し、古い番号・サーバー世代の通知は破棄する", async () => {
+  const sessionId = "playback-telemetry";
+  const { state } = await bind(sessionId);
+  const report = (body) =>
+    post("/api/dialogue/playback", { sessionId, expectedEpoch: state.epoch, ...body });
+  assert.equal((await report({ status: "speaking", sequence: 1 })).applied, true);
+  assert.equal(
+    (await report({ status: "error", message: "発話終了を確認できません", sequence: 3 })).applied,
+    true
+  );
+  assert.equal((await report({ status: "idle", sequence: 2 })).applied, false);
+  assert.equal(
+    (await report({ status: "idle", sequence: 4, expectedEpoch: "old-process" })).applied,
+    false
+  );
+  assert.equal((await report({ status: "idle", sequence: -1 })).status, 400);
+  const operator = await fetch(`${baseUrl}/api/operator/state?sessionId=${sessionId}`).then(
+    (response) => response.json()
+  );
+  assert.equal(operator.state.playback.status, "error");
+  assert.equal(operator.state.playback.sequence, 3);
+  assert.equal(operator.logs.at(-1).kind, "playback_error");
+  assert.equal((await report({ status: "idle", sequence: 4 })).applied, true);
 });

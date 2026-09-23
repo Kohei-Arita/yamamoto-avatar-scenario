@@ -1,4 +1,4 @@
-import env from "../../config/env.js";
+import { requireApplicationAccess } from "../access/access-control.js";
 import { getScenarioEngine } from "../scenario/scenario-engine.js";
 import { getDialogueLogs, getLatestBoundSessionId } from "../dialogue/dialogue-log.store.js";
 import { deliverOperatorSpeech } from "../dialogue/dialogue.service.js";
@@ -8,20 +8,7 @@ import {
 } from "../dialogue/dialogue-events.js";
 
 export function requireOperatorToken(req, res, next) {
-  if (!env.operatorToken) {
-    return res.status(503).json({
-      ok: false,
-      error: "OPERATOR_TOKEN is not configured on the server"
-    });
-  }
-
-  const authHeader = req.headers.authorization || "";
-
-  if (authHeader !== `Bearer ${env.operatorToken}`) {
-    return res.status(401).json({ ok: false, error: "Unauthorized" });
-  }
-
-  return next();
+  return requireApplicationAccess(req, res, next);
 }
 
 function resolveSessionId(req) {
@@ -66,6 +53,14 @@ function applyEngineAction(req, res, action, run) {
 
   try {
     assertExpectedVersion(req, sessionId);
+    if (
+      getScenarioEngine().getInputState(sessionId).recoveryRequired &&
+      !["jump", "reset"].includes(action)
+    ) {
+      const error = new Error("サーバー再起動後は、ジャンプで中断位置を指定してください。");
+      error.status = 409;
+      throw error;
+    }
     const engineResult = run(getScenarioEngine(), sessionId);
     const delivery = deliverOperatorSpeech(sessionId, engineResult, { action });
 
@@ -87,7 +82,12 @@ function applyEngineAction(req, res, action, run) {
 
 function assertExpectedVersion(req, sessionId) {
   const expected = req.body?.expectedVersion;
-  if (expected !== undefined && expected !== getScenarioEngine().getInputState(sessionId).version) {
+  const epoch = req.body?.expectedEpoch;
+  const current = getScenarioEngine().getInputState(sessionId);
+  if (
+    (epoch && epoch !== current.epoch) ||
+    (expected !== undefined && expected !== current.version)
+  ) {
     const error = new Error("進行が更新されました。現在の状態を確認して操作してください。");
     error.status = 409;
     throw error;

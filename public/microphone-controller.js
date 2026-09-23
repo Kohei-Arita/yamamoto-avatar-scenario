@@ -1,9 +1,12 @@
 // ミュート操作を直列化する。成功した状態だけを記録し、失敗は間隔を空けて再試行する。
+import { withOperationTimeout } from "./operation-timeout.js";
+
 export function createMicrophoneController({
   getRoom,
   initialMuted = false,
   retryMs = 500,
   maxRetries = 5,
+  timeoutMs = 8000,
   onLog = () => {},
   onState = () => {},
   onError = () => {}
@@ -14,16 +17,21 @@ export function createMicrophoneController({
   let disposed = false;
   let retryTimer = null;
   let retries = 0;
+  let faulted = false;
 
   async function sync() {
-    if (disposed || running || desired === applied) return;
+    if (disposed || faulted || running || desired === applied) return;
     const participant = getRoom()?.localParticipant;
     if (typeof participant?.setMicrophoneEnabled !== "function") return;
 
     running = true;
     const target = desired;
     try {
-      await participant.setMicrophoneEnabled(!target);
+      await withOperationTimeout(
+        participant.setMicrophoneEnabled(!target),
+        timeoutMs,
+        "マイク切り替えが完了しませんでした。音声機器を確認して再接続してください。"
+      );
       applied = target;
       retries = 0;
       if (!disposed) {
@@ -33,7 +41,11 @@ export function createMicrophoneController({
     } catch (error) {
       if (!disposed) {
         onLog(`microphone.${target ? "mute" : "unmute"}_failed: ${error.message}`);
-        if (retries++ < maxRetries) {
+        if (error.requiresReconnect) {
+          faulted = true;
+          onState("error");
+          onError(error);
+        } else if (retries++ < maxRetries) {
           retryTimer = setTimeout(() => {
             retryTimer = null;
             sync();

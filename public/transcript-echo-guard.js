@@ -4,7 +4,8 @@
 // ほぼ全体が含まれている場合はエコーとみなす。
 
 const DEFAULT_TTL_MS = 20_000;
-const DEFAULT_MIN_LENGTH = 5;
+// 短い返答や質問中の選択肢の復唱は、文字列だけではエコーと区別できない。
+const DEFAULT_MIN_LENGTH = 12;
 const DEFAULT_CONTAINMENT_THRESHOLD = 0.8;
 const MAX_REMEMBERED_ENTRIES = 16;
 
@@ -39,6 +40,14 @@ export function createEchoGuard({
   }
 
   function rememberAvatarSpeech(text) {
+    rememberSentence(text);
+    // 複数の文の単語を寄せ集めて、患者の新しい返答をエコー扱いしない。
+    for (const sentence of String(text || "").split(/[。！？!?\n]/u)) {
+      rememberSentence(sentence);
+    }
+  }
+
+  function rememberSentence(text) {
     const normalized = normalizeForEchoComparison(text);
 
     if (!normalized) {
@@ -64,7 +73,10 @@ export function createEchoGuard({
   function isLikelyEcho(transcript) {
     const normalized = normalizeForEchoComparison(transcript);
 
-    if (normalized.length < minLength) {
+    if (
+      normalized.length < minLength ||
+      /^(?:はい|ええ|こちらこそ)*よろしくお願い(?:します|いたします)$/u.test(normalized)
+    ) {
       return false;
     }
 
@@ -74,27 +86,18 @@ export function createEchoGuard({
       return false;
     }
 
-    const rememberedText = entries.map((entry) => entry.text).join("\n");
-
-    if (rememberedText.includes(normalized)) {
-      return true;
-    }
-
     const bigrams = toBigrams(normalized);
 
     if (bigrams.size === 0) {
       return false;
     }
 
-    let containedCount = 0;
-
-    for (const bigram of bigrams) {
-      if (rememberedText.includes(bigram)) {
-        containedCount += 1;
-      }
-    }
-
-    return containedCount / bigrams.size >= threshold;
+    return entries.some(({ text }) => {
+      const sourceBigrams = toBigrams(text);
+      const shared = [...bigrams].filter((bigram) => sourceBigrams.has(bigram)).length;
+      // 質問の一部を答えただけなら通す。文全体が双方で似ている場合に限って除外する。
+      return shared / bigrams.size >= threshold && shared / sourceBigrams.size >= threshold;
+    });
   }
 
   function reset() {

@@ -1,7 +1,10 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import cors from "cors";
 import express from "express";
+import accessRoutes, {
+  requireApplicationAccess,
+  requireStageAccess
+} from "./features/access/access-control.js";
 import healthRoutes from "./features/health/health.routes.js";
 import liveAvatarRoutes from "./features/liveavatar/liveavatar.routes.js";
 import dialogueRoutes from "./features/dialogue/dialogue.routes.js";
@@ -13,8 +16,18 @@ const projectRoot = path.resolve(__dirname, "..");
 
 const app = express();
 
-app.use(cors());
+app.disable("x-powered-by");
+app.use((req, res, next) => {
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Content-Security-Policy", "frame-ancestors 'self'");
+  next();
+});
 app.use(express.json());
+app.use(accessRoutes);
+app.use(["/api/dialogue", "/api/liveavatar"], requireApplicationAccess);
+app.get(["/xgate", "/xgate.html", "/index.html"], requireStageAccess);
+app.get("/access", (req, res) => res.sendFile(path.join(projectRoot, "public", "access.html")));
 app.use(
   express.static(path.join(projectRoot, "public"), {
     index: false

@@ -1,4 +1,5 @@
 import * as browserApi from "./liveavatar-browser-api.js";
+import { createSpeechBatchBuffer } from "./speech-batch.js";
 import {
   createLiveAvatarDataHandler,
   createSelfControlledSession
@@ -48,7 +49,19 @@ export function createSessionManager({
   const { Room, RoomEvent, Track } = LivekitClient;
   const { remoteVideo, remoteCanvas, remoteAudio, videoPlaceholder, subtitleBox, chromaKeyToggle } =
     elements;
-  const sessionStartLock = createSessionStartLock();
+  const sessionStartLock = createSessionStartLock({
+    onLost: () => {
+      stop().catch(onError);
+      onError(
+        Object.assign(
+          new Error(
+            "別の画面がセッションを取得したため停止しました。使用する画面を確認してください。"
+          ),
+          { requiresReconnect: true }
+        )
+      );
+    }
+  });
   const subtitleController = createSubtitleController({ subtitleBox, showSubtitles });
   const chromaKeyController = createChromaKeyController({
     remoteVideo,
@@ -108,9 +121,6 @@ export function createSessionManager({
   function start({ skipMicrophonePreflight = false } = {}) {
     if (startPromise) return startPromise;
     if (activeRun?.ready) return Promise.resolve();
-    if (!sessionStartLock.acquire())
-      return Promise.reject(new Error("別のタブでセッションが進行中です。"));
-
     const run = {
       epoch: ++lifecycleEpoch,
       abort: new AbortController(),
@@ -125,7 +135,10 @@ export function createSessionManager({
       pendingSegments: [],
       eventsConnected: false,
       snapshot: null,
-      state: null
+      state: null,
+      speechBuffer: createSpeechBatchBuffer(),
+      queuedSpeechId: null,
+      playbackSequence: 0
     };
     activeRun = run;
     const signal = run.abort.signal;
@@ -142,9 +155,41 @@ export function createSessionManager({
       onDisconnected(reason);
     };
 
+    const handleError = (error) => {
+      if (!isCurrent()) return;
+      reportPlayback("error", error.message);
+      if (error.requiresReconnect) {
+        releaseRun(run);
+        stopRemote(run.token).catch(onError);
+        onConnectionStateChange("error");
+      }
+      onError(error);
+    };
+
+    const reportPlayback = (status, message = "") => {
+      if (!isCurrent() || !run.state?.epoch || !api.reportPlaybackState) return;
+      api
+        .reportPlaybackState(run.sessionId, {
+          status,
+          message: message.slice(0, 500),
+          sequence: ++run.playbackSequence,
+          expectedEpoch: run.state.epoch
+        })
+        .catch((error) => onLog(error.message));
+    };
+
+    const queueBatch = (segments) => {
+      run.queuedSpeechId = segments[0]?.speechId || null;
+      for (const segment of segments)
+        run.conversation.receiveOperatorSegment(segment).catch(handleError);
+    };
+
     startPromise = (async () => {
       onConnectionStateChange("starting");
       try {
+        if (!(await sessionStartLock.acquire()))
+          throw new Error("別のタブでセッションが進行中です。");
+        ensureCurrent();
         config = config || (await api.fetchLiveAvatarConfig({ signal }));
         ensureCurrent();
         if (!skipMicrophonePreflight) {
@@ -210,10 +255,14 @@ export function createSessionManager({
           subtitleController,
           microphoneInitiallyMuted: true,
           onLog,
-          onError,
+          onError: handleError,
+          onPlaybackState: reportPlayback,
           onMicStateChange,
-          onInputTimeout: async ({ expectedVersion }) => {
-            const result = await api.pauseDialogueInput(run.sessionId, expectedVersion, { signal });
+          onInputTimeout: async ({ expectedVersion, expectedEpoch }) => {
+            const result = await api.pauseDialogueInput(run.sessionId, expectedVersion, {
+              signal,
+              expectedEpoch
+            });
             if (!isCurrent() || !run.conversation.applyScenarioState(result.state)) return;
             run.state = result.state;
           },
@@ -221,6 +270,7 @@ export function createSessionManager({
             if (!isCurrent()) return;
             if (result?.state && result.state.version >= run.state?.version)
               run.state = result.state;
+            if (result?.state?.speechId) run.queuedSpeechId = result.state.speechId;
             onAnswer(result);
           }
         });
@@ -234,10 +284,11 @@ export function createSessionManager({
           eventsReady = resolve;
         });
         run.events = api.subscribeDialogueEvents(run.sessionId, {
+          epoch: bound.state.epoch,
           onState: (state) => {
             if (!isCurrent()) return;
+            if (!run.conversation.applyScenarioState(state)) return;
             run.state = state;
-            run.conversation.applyScenarioState(state);
           },
           onConnectionChange: (connected, snapshot) => {
             if (!isCurrent()) return;
@@ -247,24 +298,34 @@ export function createSessionManager({
               onLog("進行チャンネル再接続中: マイク入力を停止");
               return;
             }
-            const changed = snapshot.state.version !== run.state?.version;
+            const restarted =
+              run.state?.epoch && snapshot.state.epoch && run.state.epoch !== snapshot.state.epoch;
+            if (restarted) {
+              run.conversation.recoverScenarioState(snapshot.state);
+              run.pendingSegments = [];
+              run.queuedSpeechId = null;
+              onLog("サーバーが再起動しました。操作画面のジャンプで中断位置を指定してください。");
+            }
+            const changed = restarted || snapshot.state.version !== run.state?.version;
+            const missingSpeech = snapshot.state.speechId
+              ? snapshot.state.speechId !== run.queuedSpeechId || run.speechBuffer.incomplete
+              : changed;
+            run.speechBuffer.clear();
             run.state = snapshot.state;
             run.snapshot = snapshot;
             if (!run.ready) {
-              if (changed) run.pendingSegments = [];
+              if (changed || missingSpeech) run.pendingSegments = [];
               eventsReady();
             } else {
               // SSE断中に届かなかった操作は、再接続時の現在台詞で追いつく。
-              if (changed) {
-                for (const [index, segment] of snapshot.openingSegments.entries()) {
-                  run.conversation
-                    .receiveOperatorSegment({
-                      ...segment,
-                      replace: index === 0,
-                      state: snapshot.state
-                    })
-                    .catch(onError);
-                }
+              if (missingSpeech) {
+                queueBatch(
+                  snapshot.openingSegments.map((segment, index) => ({
+                    ...segment,
+                    replace: index === 0,
+                    state: snapshot.state
+                  }))
+                );
               }
               run.conversation.applyScenarioState(snapshot.state);
               run.conversation.setTransportReady(true);
@@ -272,12 +333,29 @@ export function createSessionManager({
           },
           onSpeechSegment: (segment) => {
             if (!isCurrent()) return;
+            if (segment.state?.epoch && run.state?.epoch && segment.state.epoch !== run.state.epoch)
+              return;
+            if (segment.state?.version < run.state?.version) return;
+            if (segment.speechId && segment.speechId === run.queuedSpeechId) return;
             run.state = segment.state;
+            let batch;
+            try {
+              batch = run.speechBuffer.add(segment);
+            } catch (error) {
+              run.conversation.setTransportReady(false);
+              handleError(error);
+              return;
+            }
+            if (!batch) {
+              run.conversation.setTransportReady(false);
+              return;
+            }
             if (!run.ready) {
-              if (segment.replace) run.pendingSegments = [];
-              run.pendingSegments.push(segment);
+              if (batch[0].replace) run.pendingSegments = [];
+              run.pendingSegments.push(...batch);
             } else {
-              run.conversation.receiveOperatorSegment(segment).catch(onError);
+              queueBatch(batch);
+              run.conversation.setTransportReady(run.eventsConnected);
             }
           }
         });
@@ -294,15 +372,20 @@ export function createSessionManager({
         );
         ensureCurrent();
         const snapshot = run.snapshot;
+        if (run.speechBuffer.incomplete)
+          throw new Error("台詞の受信が途中で止まりました。再接続してください。");
         const opening = run.pendingSegments.length
           ? run.pendingSegments
-          : (snapshot.state.version === bound.state.version
+          : (snapshot.state.epoch === bound.state.epoch &&
+            snapshot.state.speechId === bound.state.speechId &&
+            snapshot.state.version === bound.state.version
               ? bound.openingSegments
               : snapshot.openingSegments
             ).map((segment) => ({ ...segment, state: snapshot.state }));
         run.conversation.applyScenarioState(run.state);
         run.ready = true;
         await Promise.all(opening.map((segment) => run.conversation.speakText(segment)));
+        run.queuedSpeechId = run.state?.speechId || null;
         ensureCurrent();
         run.conversation.setTransportReady(run.eventsConnected);
         onConnectionStateChange("connected");

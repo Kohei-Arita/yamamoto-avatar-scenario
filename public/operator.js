@@ -27,12 +27,15 @@ let pollTimer = null;
 let knownNodeIds = [];
 let currentState = null;
 let actionBusy = false;
+let refreshBusy = false;
 
 function updateActionButtons() {
   document
     .querySelectorAll(".operator-actions button, .operator-branches button, #jumpBtn")
     .forEach((button) => {
       button.disabled = actionBusy || !currentState;
+      if (currentState?.recoveryRequired && button !== jumpBtn && button !== resetBtn)
+        button.disabled = true;
     });
 }
 updateActionButtons();
@@ -146,14 +149,27 @@ function renderJumpOptions(nodeIds) {
 
 function renderState(data) {
   const state = data.state || {};
-  if (state.sessionId === currentState?.sessionId && state.version < currentState.version) return;
+  if (
+    state.sessionId === currentState?.sessionId &&
+    state.epoch === currentState.epoch &&
+    state.version < currentState.version
+  )
+    return;
   currentState = state;
   stateConnection.textContent = data.avatarConnected ? "接続中" : "未接続（台詞を送信できません）";
-  stateInput.textContent = state.inputPaused
-    ? "停止中（操作係の再開待ち）"
-    : state.acceptsPatientInput
-      ? "患者の返答を受付（アバター発話中はミュート）"
-      : "自動停止中（Voting待機・終了）";
+  const playback = state.playback;
+  if (playback?.status === "error")
+    stateConnection.textContent += ` / 音声エラー: ${playback.message}`;
+  else if (playback?.status === "speaking") stateConnection.textContent += " / 発話開始通知あり";
+  else if (playback?.status === "idle")
+    stateConnection.textContent += " / 発話終了通知あり（実音は要確認）";
+  stateInput.textContent = state.recoveryRequired
+    ? "サーバー再起動：ジャンプで中断位置を指定してください"
+    : state.inputPaused
+      ? "停止中（操作係の再開待ち）"
+      : state.acceptsPatientInput
+        ? "患者の返答を受付（アバター発話中はミュート）"
+        : "自動停止中（Voting待機・終了）";
   inputBtn.textContent = state.inputPaused ? "音声入力を再開" : "音声入力を停止";
   const logs = data.logs || [];
 
@@ -182,7 +198,8 @@ function renderState(data) {
 }
 
 async function refresh() {
-  if (actionBusy) return;
+  if (actionBusy || refreshBusy) return;
+  refreshBusy = true;
   try {
     const data = await api("/api/operator/state");
     authState.textContent = "接続中";
@@ -190,6 +207,8 @@ async function refresh() {
   } catch (error) {
     authState.textContent = `再接続待ち: ${error.message}`;
     if (error.status === 401 || error.status === 503) stopPolling();
+  } finally {
+    refreshBusy = false;
   }
 }
 
@@ -218,7 +237,8 @@ async function runAction(action, body = {}) {
       body: {
         ...body,
         sessionId: currentState.sessionId,
-        expectedVersion: currentState.version
+        expectedVersion: currentState.version,
+        expectedEpoch: currentState.epoch
       }
     });
     const delivery = data.delivery || {};

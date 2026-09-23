@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { EventEmitter } from "node:events";
+import { createMicrophoneController } from "./microphone-controller.js";
 
 import { createSelfControlledConversation as createConversation } from "./liveavatar-self-controller.js";
 
@@ -12,6 +13,103 @@ function createSelfControlledConversation(options) {
 }
 test.afterEach(() => {
   for (const conversation of conversations.splice(0)) conversation.dispose();
+});
+
+test("挨拶の返礼をエコーで捨てず、発話完了後の患者の回答として送る", async () => {
+  const { room, publishedEvents } = createRoomWithPublishedEvents();
+  const replies = [];
+  const conversation = createSelfControlledConversation({
+    getRoom: () => room,
+    getSessionId: () => "greeting-reply",
+    debounceMs: 5,
+    respondToTextStream: async ({ text }) => {
+      replies.push(text);
+      return {};
+    }
+  });
+  await conversation.speakText("こんにちは。山本です。本日はよろしくお願いします。");
+  const event = publishedEvents[0];
+  for (const event_type of ["avatar.speak_started", "avatar.speak_ended"]) {
+    conversation.handleAgentResponseEvent({ event_type, source_event_id: event.event_id });
+  }
+  conversation.handleAgentResponseEvent({
+    event_type: "user.transcription",
+    text: "はい、よろしくお願いします。"
+  });
+  await wait(20);
+  assert.deepEqual(replies, ["はい、よろしくお願いします。"]);
+});
+
+test("送信Promiseが戻らない場合も期限で止め、同じ接続では再送しない", async () => {
+  const { room, micEnabledCalls } = createRoomWithPublishedEvents();
+  let publishCount = 0;
+  room.localParticipant.publishData = () => {
+    publishCount += 1;
+    return new Promise(() => {});
+  };
+  const errors = [];
+  const conversation = createSelfControlledConversation({
+    getRoom: () => room,
+    getSessionId: () => "hung-publish",
+    controlPublishTimeoutMs: 10,
+    onError: (error) => errors.push(error)
+  });
+  await assert.rejects(conversation.speakText("送信を監視します。"), /再接続/u);
+  await wait(30);
+  assert.equal(publishCount, 1);
+  assert.equal(errors[0].requiresReconnect, true);
+  assert.equal(micEnabledCalls.at(-1), false);
+});
+
+test("マイクPromiseが戻らなくても停止を通知し、遅延操作を並列に再試行しない", async () => {
+  let calls = 0;
+  const errors = [];
+  const microphone = createMicrophoneController({
+    getRoom: () => ({
+      localParticipant: {
+        setMicrophoneEnabled: () => {
+          calls += 1;
+          return new Promise(() => {});
+        }
+      }
+    }),
+    timeoutMs: 10,
+    retryMs: 1,
+    onError: (error) => errors.push(error)
+  });
+  microphone.setMuted(true);
+  await wait(30);
+  microphone.setMuted(false);
+  microphone.setMuted(true);
+  assert.equal(calls, 1);
+  assert.equal(errors[0].requiresReconnect, true);
+  microphone.dispose();
+});
+
+test("対話ストリームの途中切断は入力を閉じ、操作係の再発話まで進めない", async () => {
+  const { room, micEnabledCalls } = createRoomWithPublishedEvents();
+  const calls = [];
+  const errors = [];
+  const conversation = createSelfControlledConversation({
+    getRoom: () => room,
+    getSessionId: () => "partial-response",
+    debounceMs: 5,
+    respondToTextStream: async ({ text }) => {
+      calls.push(text);
+      throw new Error("stream ended without done");
+    },
+    onError: (error) => errors.push(error)
+  });
+  conversation.handleAgentResponseEvent({ event_type: "user.transcription", text: "はい。" });
+  await wait(20);
+  conversation.handleAgentResponseEvent({
+    event_type: "user.transcription",
+    text: "特にありません。"
+  });
+  await wait(20);
+  assert.deepEqual(calls, ["はい。"]);
+  assert.equal(micEnabledCalls.at(-1), false);
+  assert.equal(errors.length, 1);
 });
 
 function wait(ms) {
@@ -84,7 +182,7 @@ test("LiveAvatarの発話・中断コマンドには接頭辞なしのUUIDを送
   assert.notEqual(publishedEvents[0].event_id, publishedEvents[1].event_id);
 });
 
-test("対話通信の中断エラー後もマイクを解除して次の発話を受け付ける", async () => {
+test("外部からのAbortErrorも処理済みとは見なさず、入力を閉じて復旧を待つ", async () => {
   const { room, micEnabledCalls } = createRoomWithPublishedEvents();
   const calls = [];
   const conversation = createSelfControlledConversation({
@@ -103,8 +201,8 @@ test("対話通信の中断エラー後もマイクを解除して次の発話�
     text: "特にありません。"
   });
   await wait(20);
-  assert.deepEqual(calls, ["はい。", "特にありません。"]);
-  assert.deepEqual(micEnabledCalls, [false, true, false, true]);
+  assert.deepEqual(calls, ["はい。"]);
+  assert.deepEqual(micEnabledCalls, [false]);
 });
 
 test("buffers adjacent transcription fragments into one final utterance", async () => {
@@ -388,7 +486,7 @@ test("雑音だけが30秒続いたら進行させず停止し、操作係の再
   event("user.transcription", "。");
   tick(30_000);
   assert.deepEqual(requests, []);
-  assert.deepEqual(timeouts, [{ expectedVersion: 0 }]);
+  assert.deepEqual(timeouts, [{ expectedVersion: 0, expectedEpoch: undefined }]);
   assert.deepEqual(micEnabledCalls, [false]);
   event("user.transcription", "はい。");
   tick(60_000);
@@ -515,15 +613,17 @@ test("speak_started未着時はspeak_textを一度だけ自動再送する(開�
   );
 });
 
-test("speak_started/endedが届かなくてもウォッチドッグでキューが前進する", async () => {
-  const { room, publishedEvents } = createRoomWithPublishedEvents();
+test("開始通知が再送後も届かなければ、聞こえていない台詞を飛ばさず操作待ちにする", async () => {
+  const { room, publishedEvents, micEnabledCalls } = createRoomWithPublishedEvents();
+  const errors = [];
   const conversation = createSelfControlledConversation({
     getRoom: () => room,
     getSessionId: () => "session-watchdog",
     respondToTextStream: async () => ({ content: "" }),
     speakStartTimeoutMs: 30,
     speakEndTimeoutBaseMs: 30,
-    speakEndTimeoutPerCharMs: 0
+    speakEndTimeoutPerCharMs: 0,
+    onError: (error) => errors.push(error)
   });
 
   await conversation.speakText("一文目です。");
@@ -531,15 +631,48 @@ test("speak_started/endedが届かなくてもウォッチドッグでキュー�
 
   assert.equal(publishedEvents.length, 1);
 
-  // アバターからのライフサイクルイベントが一切届かなくても、
-  // 再送(1回)→発話中とみなす→endウォッチドッグの経過後に次のセグメントへ前進する
+  // 一度だけ再送し、開始が確認できなければ入力を閉じる。
   await wait(200);
 
   const texts = publishedEvents
     .filter((event) => event.event_type === "avatar.speak_text")
     .map((event) => event.text);
   assert.equal(texts.filter((text) => text === "一文目です。").length, 2);
-  assert.ok(texts.includes("二文目です。"));
+  assert.equal(texts.includes("二文目です。"), false);
+  assert.equal(micEnabledCalls.at(-1), false);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].message, /再発話/u);
+});
+
+test("終了通知のタイムアウトも検出し、操作係の再発話でキューを復旧できる", async () => {
+  const { room, publishedEvents, micEnabledCalls } = createRoomWithPublishedEvents();
+  const errors = [];
+  const conversation = createSelfControlledConversation({
+    getRoom: () => room,
+    getSessionId: () => "end-timeout",
+    speakEndTimeoutBaseMs: 10,
+    speakEndTimeoutPerCharMs: 0,
+    interruptGraceMs: 0,
+    onError: (error) => errors.push(error)
+  });
+  await conversation.speakText("終了通知が欠ける説明です。");
+  conversation.handleAgentResponseEvent({
+    event_type: "avatar.speak_started",
+    source_event_id: publishedEvents[0].event_id
+  });
+  await wait(30);
+  assert.match(errors[0].message, /発話終了/u);
+  assert.equal(micEnabledCalls.at(-1), false);
+  await conversation.receiveOperatorSegment({
+    replace: true,
+    state: { version: 1, acceptsPatientInput: true },
+    speechText: "操作係が再送した説明です。"
+  });
+  const event = publishedEvents.at(-1);
+  for (const event_type of ["avatar.speak_started", "avatar.speak_ended"])
+    conversation.handleAgentResponseEvent({ event_type, source_event_id: event.event_id });
+  await wait(1);
+  assert.equal(micEnabledCalls.at(-1), true);
 });
 
 test("句読点だけのASR断片は送信せず、アバターの発話も中断しない", async () => {

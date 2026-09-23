@@ -1,4 +1,7 @@
 import env from "../../config/env.js";
+import { randomUUID } from "node:crypto";
+
+export const SERVER_EPOCH = randomUUID();
 
 // セッション再接続後の進行引き継ぎを許可する時間窓。
 // これを超えて古い進行は引き継がない(前回公演の残骸を持ち込まないため)。
@@ -41,6 +44,10 @@ export function getOrCreateScenarioSession(sessionId, entryNodeId) {
     sessionId: key,
     nodeId: entryNodeId,
     version: 0,
+    epoch: SERVER_EPOCH,
+    speechId: randomUUID(),
+    recoveryRequired: false,
+    playback: { status: "unknown", sequence: 0, message: "", updatedAt: null },
     inputPaused: false,
     lastSpeechLines: [],
     history: [{ nodeId: entryNodeId, via: "entry", at: nowIso() }],
@@ -59,8 +66,12 @@ export function moveScenarioSession(session, nodeId, via, lines = []) {
   const fromNodeId = session.nodeId;
   const fromVersion = session.version;
   session.nodeId = nodeId;
+  if (session.recoveryRequired && ["operator:jump", "operator:reset"].includes(via)) {
+    session.recoveryRequired = false;
+    session.inputPaused = false;
+  }
   session.version += 1;
-  session.lastSpeechLines = [...lines];
+  if (via !== "operator:input") rememberScenarioSpeech(session, lines);
   session.history.push({ nodeId, via, at: nowIso() });
 
   while (session.history.length > 200) {
@@ -77,6 +88,11 @@ export function moveScenarioSession(session, nodeId, via, lines = []) {
 
   session.updatedAt = nowIso();
   return session;
+}
+
+export function rememberScenarioSpeech(session, lines) {
+  session.lastSpeechLines = [...lines];
+  session.speechId = randomUUID();
 }
 
 // 患者発話の言い直し(revision)時に、直前の患者遷移を取り消して遷移元ノードへ戻す。
@@ -116,6 +132,7 @@ export function adoptScenarioSession(fromSessionId, toSessionId, entryNodeId) {
   target.nodeId = source.nodeId;
   target.version = source.version + 1;
   target.inputPaused = source.inputPaused;
+  target.recoveryRequired = source.recoveryRequired;
   target.lastSpeechLines = [...source.lastSpeechLines];
   target.history = [...source.history, { nodeId: source.nodeId, via: "adopted", at: nowIso() }];
   target.lastPatientMove = null;

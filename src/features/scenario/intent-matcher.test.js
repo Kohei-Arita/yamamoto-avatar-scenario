@@ -33,9 +33,24 @@ test("「咳が出ます」は has_symptoms にルールマッチする", () => 
   assert.equal(match?.intent, "has_symptoms");
 });
 
-test("マッチ数が同点のときは定義順の早いintentを優先する", () => {
+test("症状語を否定した返答は、症状ありに分類しない", () => {
   const match = matchIntentByRules("咳はありません", INTENT_ADVANCES);
   assert.equal(match?.intent, "no_symptoms");
+  assert.equal(matchIntentByRules("咳も痰もありません", INTENT_ADVANCES)?.intent, "no_symptoms");
+});
+
+test("否定後の追加症状や複数候補は、キーワードの個数で即決しない", () => {
+  assert.equal(matchIntentByRules("特にないんですけど、咳が出ます", INTENT_ADVANCES), null);
+  assert.equal(matchIntentByRules("咳はありませんが、熱があります", INTENT_ADVANCES), null);
+  for (const text of ["咳が止まらない", "熱が下がらない", "咳がないわけではない"]) {
+    assert.equal(matchIntentByRules(text, INTENT_ADVANCES), null, text);
+  }
+});
+
+test("否定された操作合図はルールで進めない", () => {
+  const advances = [{ intent: "present_imaging", keywords: ["画像", "提示"], next: "imaging" }];
+  assert.equal(matchIntentByRules("まだ画像を提示しないでください", advances), null);
+  assert.equal(matchIntentByRules("画像を提示します", advances)?.intent, "present_imaging");
 });
 
 test("選択肢外の発話はルール層でnullを返す", () => {
