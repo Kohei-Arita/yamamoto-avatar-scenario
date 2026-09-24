@@ -6,6 +6,50 @@
 
 🗣は、有効な発話があり、一区切りを確認してから次の決まった台詞を返すことを意味します。声の検出や途中の文字起こしだけでは進みません（受付には安全上の30秒上限があります）。本番の応答は固定文で、患者の言い回しに合わせた自由回答は作りません。「何か話せば次へ」も、無音・雑音・待機や聞き直しの依頼を除く有効な発話が対象です。
 
+## 全体図
+
+黄色は監修前の仮（placeholder）、青はオペレーター操作で進むVoting待機ノードです。
+
+```mermaid
+flowchart TD
+  classDef ph fill:#fff4d6,stroke:#d9a400,color:#4a3700
+  classDef vote fill:#e3edff,stroke:#3b6fd8,color:#15315f
+
+  subgraph SC1["シーン1（問診）"]
+    s1_greeting["1 s1_greeting<br/>挨拶"] -->|🗣| s1_symptoms["2 s1_symptoms<br/>症状確認"]
+    s1_symptoms -->|"🗣 症状なし"| s1_adl["3 s1_adl<br/>生活確認"]
+    s1_symptoms -->|"🗣 症状あり"| s1_symptoms_redirect["2b s1_symptoms_redirect<br/>安全網"]:::ph
+    s1_adl -->|🗣| s1_voting1_wait{{"4 s1_voting1_wait<br/>Voting①"}}:::vote
+    s1_symptoms_redirect -->|🗣| s1_voting1_wait
+    s1_voting1_wait -->|"🔘 A"| v1_smoking["5A v1_smoking<br/>喫煙歴"]:::ph
+    s1_voting1_wait -->|"🔘 B"| v1_occupation["5B v1_occupation<br/>職業歴"]:::ph
+    s1_voting1_wait -->|"🔘 C"| v1_ip_history["5C v1_ip_history<br/>間質性肺炎の経過"]:::ph
+    v1_smoking -->|🗣| v1_smoking_ack["v1_smoking_ack"]:::ph
+    v1_occupation -->|🗣| v1_occupation_ack["v1_occupation_ack"]:::ph
+    v1_ip_history -->|🗣| v1_ip_history_ack["v1_ip_history_ack"]:::ph
+    v1_smoking_ack & v1_occupation_ack & v1_ip_history_ack -->|⏩| s1_close["6 s1_close<br/>検査結果の確認へ"]
+  end
+
+  s1_close -->|"🗣 画像を提示します"| s2_imaging
+
+  subgraph SC2["シーン2（検査説明・治療方針）"]
+    s2_imaging["7 s2_imaging<br/>画像所見"] -->|⏩| s2_pathology["8 s2_pathology<br/>病理・診断"]
+    s2_pathology -->|"🗣 手術で治る?"| s2_cure_answer["9 s2_cure_answer<br/>根治への回答"]
+    s2_pathology -->|"🗣 相づち"| s2_values["10 s2_values<br/>大切にしたいこと"]
+    s2_cure_answer -->|⏩| s2_values
+    s2_values -->|🗣| s2_values_risk_ack["11 s2_values_risk_ack<br/>リスク回避"]
+    s2_values_risk_ack -->|🗣| s2_values_wedding_ack["12 s2_values_wedding_ack<br/>結婚式"]
+    s2_values_wedding_ack -->|⏩| s2_voting2_wait{{"13 s2_voting2_wait<br/>Voting②"}}:::ph
+    s2_voting2_wait -->|"🔘 A"| v2_surgery["14A v2_surgery<br/>手術"]:::ph
+    s2_voting2_wait -->|"🔘 B"| v2_radiation["14B v2_radiation<br/>放射線"]:::ph
+    s2_voting2_wait -->|"🔘 C"| v2_chemo["14C v2_chemo<br/>薬物療法"]:::ph
+    v2_surgery & v2_radiation & v2_chemo -->|⏩| s2_closing["15 s2_closing<br/>クロージング（終端）"]:::ph
+  end
+```
+
+> [!NOTE]
+> `s2_voting2_wait` はVoting待機ですが、セリフが仮のため黄色で表示しています。
+
 ## シーン1（問診）
 
 | #   | ノードID                              | 台本           | セリフ（冒頭）                                                                         | 進み方                                                                          |

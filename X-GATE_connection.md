@@ -12,6 +12,25 @@ README でも `npm run dev` のあとに `http://localhost:3000` を開いて動
 
 ## 全体像
 
+```mermaid
+flowchart LR
+  MIC["🎤 患者役の専用マイク"] --> XG
+  subgraph MAC["Mac"]
+    SV["npm run dev<br/>localhost:3000"]
+    XG["/xgate<br/>会場表示（フルスクリーン）"]
+    OP["/operator<br/>進行操作（手元の画面）"]
+    SV --- XG
+    SV --- OP
+  end
+  XG -->|"HDMI（拡張表示）"| GATE["X-Gate<br/>3D GHOST 65HDU"]
+```
+
+| 画面          | 映す場所           | 用途                               |
+| ------------- | ------------------ | ---------------------------------- |
+| `/xgate`      | X-Gate（外部画面） | アバターの全画面表示               |
+| `/operator`   | 手元のMac画面      | Voting反映・救済操作・進行ログ     |
+| `/index.html` | 手元のMac画面      | 接続確認・切り分け用のデバッグ画面 |
+
 やることは大きく 3 段階です。
 
 1. まず Mac 単体で `http://localhost:3000/xgate` が正常動作することを確認する
@@ -20,7 +39,7 @@ README でも `npm run dev` のあとに `http://localhost:3000` を開いて動
 
 ## 1. どの画面を使うか
 
-今のアプリには、用途が違う 2 つの画面があります。
+今のアプリには、用途が違う 3 つの画面があります。
 
 ### 確認用 UI
 
@@ -188,14 +207,14 @@ X-Gate 側に出したブラウザでフルスクリーンにします。
 
 今回の構成では、Mac 自身のブラウザで開いて、その Mac が X-Gate へ映像出力するので、URL は `localhost:3000` のままで問題ありません。
 
-## 2. GitHub に上げないと X-Gate で見られない？
+### 2. GitHub に上げないと X-Gate で見られない？
 
 不要です。
 
 GitHub はソース管理用であって、X-Gate は基本的に外部ディスプレイです。
 まずは `ローカル起動 + HDMI` で十分です。
 
-## 3. Docker にした方がいい？
+### 3. Docker にした方がいい？
 
 今すぐは不要です。
 

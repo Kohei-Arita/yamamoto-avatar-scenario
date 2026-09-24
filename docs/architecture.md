@@ -6,27 +6,30 @@
 
 本番の基本動作は「ユーザーの有効な発話を受ける → 一区切りを確認する → 台本で決まった応答を返す」。応答内容を自由生成するシステムではなく、意図分類も定義済みの分岐を選ぶために使う。開始挨拶・auto遷移・operator操作は台本の別の開始条件であり、患者入力の区切り判定には後述の30秒上限も適用する。
 
-```
-利用者(模擬患者)の音声
-  → LiveAvatarが文字起こし
-  → ブラウザが発話断片を結合・非発話の断片(句読点のみ等)とエコー(スピーカー回り込み)を除外
-     (public/liveavatar-self-controller.js)
-  → user-turn-detector で発話の一区切りを確認して確定（安全上の受付上限は30秒）
-  → POST /api/dialogue/respond/stream (結合再送時は revision フラグ付き)
-  → transcript-normalizer でASR補正
-  → scenario-engine:
-       ├─ 非発話の断片 → kind="ignored"。進行も発話もしない(サーバー側の二重防御)
-       ├─ 待機・聞き直しの依頼 → 進めずに待機の定型文・直前の説明を再発話
-       ├─ patient_any → その他の有効な発話なら次へ進む
-       ├─ patient_intent → 現在ノードに対する患者発話を intent-matcher で分類
-       │    ├─ 想定内 → 次ノードの医師セリフを確定
-       │    ├─ 想定外だが軽微 → 受け止め一文 + 現在ノードの質問を再提示
-       │    └─ 台本外(予後断定要求・雑談など) → deviation-handler の定型文で台本へ復帰
-       └─ 判定中にoperator操作が入っていた → kind="superseded"。判定を破棄し発話しない
-  → セリフ確定(本番: doctorLinesや逸脱時の定型文。自由回答・LLM言い換えは行わない)
-  → streaming-speech で文単位に分割
-  → SSE speech_segment
-  → ブラウザが台詞一式の受信を確認 → 読み上げキュー → avatar.speak_text
+```mermaid
+flowchart TD
+  U["🎤 模擬患者の音声"] --> ASR["LiveAvatarが文字起こし"]
+  subgraph BR["ブラウザ（public/）"]
+    FL["断片を結合<br/>非発話の断片・エコーを除外<br/>liveavatar-self-controller.js"]
+    TURN["発話の一区切りを確認<br/>user-turn-detector.js（受付上限30秒）"]
+  end
+  ASR --> FL --> TURN
+  TURN -->|"POST /api/dialogue/respond/stream<br/>結合再送時は revision 付き"| NORM
+  subgraph SV["サーバー（src/features/）"]
+    NORM["transcript-normalizer<br/>ASR補正"] --> ENG{"scenario-engine"}
+    ENG -->|非発話の断片| IGN["ignored<br/>進行も発話もしない"]
+    ENG -->|判定中にoperator操作| SUP["superseded<br/>判定を破棄し発話しない"]
+    ENG -->|待機・聞き直しの依頼| HOLD["待機の定型文<br/>または直前の説明を再発話"]
+    ENG -->|"patient_any"| NEXT["次ノードの医師セリフ"]
+    ENG -->|"patient_intent"| IM["intent-matcher で分類"]
+    IM -->|想定内| NEXT
+    IM -->|想定外だが軽微| RE["受け止め一文<br/>＋現在の質問を再提示"]
+    IM -->|"台本外（予後断定・雑談など）"| DV["deviation-handler の定型文"]
+    NEXT & RE & DV & HOLD --> LINE["セリフ確定<br/>doctorLines・定型文のみ<br/>自由回答・言い換えはしない"]
+    LINE --> SPLIT["streaming-speech で文単位に分割"]
+  end
+  SPLIT -->|"SSE speech_segment"| QUEUE["ブラウザ：台詞一式の受信を確認<br/>→ 読み上げキュー"]
+  QUEUE --> SPK["avatar.speak_text 🔊"]
 ```
 
 進行の主導権は常にサーバー側の「現在ノード」にあります。発話はシナリオJSONの台詞と逸脱時の定型文に限ります。発話開始・終了の通知とエラーは会場画面からサーバーへ報告し、操作画面で確認できます。通知は会場スピーカーからの実音を保証するものではありません。
@@ -56,10 +59,14 @@ src/shared/http/sse.js    SSEヘッダー・イベント書き込みの共通化
 
 - ノードは有向グラフ。各ノードは `id` / `scene` / `doctorLines[]` / `advance[]` を持つ。
 - `advance` の遷移条件:
-  - `patient_any`: 患者の有効な発話で次へ（待機・聞き直しの依頼は除く）
-  - `patient_intent`: intent分類結果で分岐（`keywords` によるルール層 → 不一致時のみLLM分類）
-  - `operator`: オペレーター操作でのみ遷移（Voting分岐）
-  - `auto`: 発話後に待たず次ノードへ連結
+
+| 条件             | 進むきっかけ                                                          | 台本での例                   |
+| ---------------- | --------------------------------------------------------------------- | ---------------------------- |
+| `patient_any`    | 患者の有効な発話（待機・聞き直しの依頼は除く）                        | 挨拶、生活確認、価値観確認   |
+| `patient_intent` | intent分類の結果で分岐（`keywords` のルール層 → 不一致時のみLLM分類） | 症状確認、画像提示、病理説明 |
+| `operator`       | オペレーター操作のみ                                                  | Voting①・Voting②             |
+| `auto`           | 発話後に待たず次ノードへ連結                                          | 画像所見 → 病理、治療説明    |
+
 - `advance: []` は終端ノード。
 - `placeholder: true` は監修前の仮置きテキスト。**監修後はJSONの該当ノードのテキストを差し替え、`script-readings.js` に読みを追加すれば更新できる（進行ロジックのコード変更は不要）**。
 - 逸脱時の定型応答は `globalDeviationReplies`（ノード単位は `onDeviation` で上書き）。
@@ -104,6 +111,22 @@ src/shared/http/sse.js    SSEヘッダー・イベント書き込みの共通化
 | `POST /api/operator/say`            | セリフ再発話                                                                                           |
 | `POST /api/operator/input`          | 音声入力を停止・再開 `{paused: true/false}`。進行位置は維持                                            |
 | `POST /api/liveavatar/keep-alive`   | 登録済みセッションの無操作タイムアウトを延長                                                           |
+
+```mermaid
+sequenceDiagram
+  participant OP as 操作画面 /operator
+  participant SV as サーバー
+  participant XG as 会場画面 /xgate
+  participant LA as LiveAvatar
+  OP->>SV: POST /api/operator/branch など<br/>（expectedVersion 付き）
+  SV-->>OP: 409（進行番号が古い場合）
+  SV->>XG: SSE /api/dialogue/events<br/>speech_segment × N（speechId・連番・総数）
+  Note over XG: 全件そろうまで発話しない<br/>先頭の replace: true で古いキューを破棄
+  XG->>LA: avatar.speak_text（event_id = UUID）
+  LA-->>XG: avatar.speak_started / speak_ended（source_event_id）
+  XG->>SV: POST /api/dialogue/playback（開始・終了・エラー）
+  SV-->>OP: 会場の発話通知を表示
+```
 
 オペレーター操作で確定したセリフは `/api/dialogue/events` のSSE経由で送られます。全件の受信を確認した後、最初のセグメントの `replace: true` により古い患者発話の処理・読み上げキューを取り消して新しいセリフへ切り替えます。再発話は、auto遷移で連結された説明全体や直前の逸脱応答を再生します。
 
