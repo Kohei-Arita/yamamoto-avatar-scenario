@@ -14,15 +14,18 @@ README でも `npm run dev` のあとに `http://localhost:3000` を開いて動
 
 ```mermaid
 flowchart LR
-  MIC["🎤 患者役の専用マイク"] --> XG
+  MIC["🎤 患者役の専用マイク<br/>アバター音声を戻さない"] --> XG
   subgraph MAC["Mac"]
-    SV["npm run dev<br/>localhost:3000"]
-    XG["/xgate<br/>会場表示（フルスクリーン）"]
+    SV["npm run dev<br/>localhost:3000<br/>.env: LIVEAVATAR_API_KEY / OPENAI_API_KEY / OPERATOR_TOKEN"]
+    AC["/access<br/>投影前に OPERATOR_TOKEN で認証（12時間有効）"]
+    XG["/xgate?autostart=1&amp;controls=0&amp;subtitles=1<br/>会場表示（フルスクリーン）"]
     OP["/operator<br/>進行操作（手元の画面）"]
+    AC --> XG
     SV --- XG
     SV --- OP
   end
   XG -->|"HDMI（拡張表示）"| GATE["X-Gate<br/>3D GHOST 65HDU"]
+  OP -. "Voting反映・救済操作" .-> SV
 ```
 
 | 画面          | 映す場所           | 用途                               |

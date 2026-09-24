@@ -10,26 +10,26 @@
 flowchart TD
   U["🎤 模擬患者の音声"] --> ASR["LiveAvatarが文字起こし"]
   subgraph BR["ブラウザ（public/）"]
-    FL["断片を結合<br/>非発話の断片・エコーを除外<br/>liveavatar-self-controller.js"]
-    TURN["発話の一区切りを確認<br/>user-turn-detector.js（受付上限30秒）"]
+    FL["断片を結合<br/>非発話の断片・エコー・発話中の入力を除外<br/>liveavatar-self-controller.js<br/>🔎 non_lexical_ignored / echo_ignored / ignored_while_speaking"]
+    TURN["発話の一区切りを確認<br/>user-turn-detector.js（受付上限30秒）<br/>🔎 user.turn.finalized"]
   end
   ASR --> FL --> TURN
-  TURN -->|"POST /api/dialogue/respond/stream<br/>結合再送時は revision 付き"| NORM
+  TURN -->|"POST /api/dialogue/respond/stream<br/>expectedEpoch・expectedVersion 付き<br/>結合再送時は revision 付き"| NORM
   subgraph SV["サーバー（src/features/）"]
-    NORM["transcript-normalizer<br/>ASR補正"] --> ENG{"scenario-engine"}
-    ENG -->|非発話の断片| IGN["ignored<br/>進行も発話もしない"]
-    ENG -->|判定中にoperator操作| SUP["superseded<br/>判定を破棄し発話しない"]
+    NORM["transcript-normalizer<br/>ASR補正"] --> ENG{"scenario-engine<br/>revision なら直前の患者遷移を巻き戻し<br/>🔎 revision_rewind"}
+    ENG -->|非発話の断片| IGN["ignored<br/>進行も発話もしない<br/>🔎 utterance_ignored"]
+    ENG -->|判定中にoperator操作| SUP["superseded<br/>判定を破棄し発話しない<br/>🔎 utterance_superseded"]
     ENG -->|待機・聞き直しの依頼| HOLD["待機の定型文<br/>または直前の説明を再発話"]
-    ENG -->|"patient_any"| NEXT["次ノードの医師セリフ"]
-    ENG -->|"patient_intent"| IM["intent-matcher で分類"]
+    ENG -->|"patient_any"| NEXT["次ノードの医師セリフ<br/>auto 遷移があれば連結"]
+    ENG -->|"patient_intent"| IM["intent-matcher で分類<br/>キーワード → 不一致時のみLLM<br/>（既定6秒で打ち切り）"]
     IM -->|想定内| NEXT
     IM -->|想定外だが軽微| RE["受け止め一文<br/>＋現在の質問を再提示"]
     IM -->|"台本外（予後断定・雑談など）"| DV["deviation-handler の定型文"]
     NEXT & RE & DV & HOLD --> LINE["セリフ確定<br/>doctorLines・定型文のみ<br/>自由回答・言い換えはしない"]
-    LINE --> SPLIT["streaming-speech で文単位に分割"]
+    LINE --> SPLIT["streaming-speech で文単位に分割<br/>読み上げ用は script-readings → speech-pronunciation で読みに変換"]
   end
-  SPLIT -->|"SSE speech_segment"| QUEUE["ブラウザ：台詞一式の受信を確認<br/>→ 読み上げキュー"]
-  QUEUE --> SPK["avatar.speak_text 🔊"]
+  SPLIT -->|"SSE speech_segment<br/>speechId・連番・総数付き"| QUEUE["ブラウザ：台詞一式の受信を確認<br/>→ 読み上げキュー<br/>応答中はマイクOFF 🔎 microphone.muted"]
+  QUEUE --> SPK["avatar.speak_text 🔊<br/>event_id = UUID"]
 ```
 
 進行の主導権は常にサーバー側の「現在ノード」にあります。発話はシナリオJSONの台詞と逸脱時の定型文に限ります。発話開始・終了の通知とエラーは会場画面からサーバーへ報告し、操作画面で確認できます。通知は会場スピーカーからの実音を保証するものではありません。
@@ -118,14 +118,24 @@ sequenceDiagram
   participant SV as サーバー
   participant XG as 会場画面 /xgate
   participant LA as LiveAvatar
-  OP->>SV: POST /api/operator/branch など<br/>（expectedVersion 付き）
-  SV-->>OP: 409（進行番号が古い場合）
-  SV->>XG: SSE /api/dialogue/events<br/>speech_segment × N（speechId・連番・総数）
-  Note over XG: 全件そろうまで発話しない<br/>先頭の replace: true で古いキューを破棄
-  XG->>LA: avatar.speak_text（event_id = UUID）
-  LA-->>XG: avatar.speak_started / speak_ended（source_event_id）
-  XG->>SV: POST /api/dialogue/playback（開始・終了・エラー）
-  SV-->>OP: 会場の発話通知を表示
+  OP->>SV: POST /api/operator/branch など<br/>（expectedVersion 付き・8秒で打ち切り）
+  alt 進行番号が古い
+    SV-->>OP: 409（操作を拒否）
+  else 受理
+    SV->>XG: SSE /api/dialogue/events<br/>speech_segment × N（speechId・連番・総数）
+    Note over XG: 全件そろうまで発話しない・マイクも閉じたまま<br/>先頭の replace: true で古いキューと判定を破棄
+    loop セグメントごと
+      XG->>LA: avatar.speak_text（event_id = UUID）
+      alt speak_started が届かない
+        XG->>LA: 一度だけ再送 🔎 watchdog.speak_start_retry
+        Note over XG: それでも開始・終了を確認できなければ<br/>入力とキューを止めて音声エラーを報告
+      end
+      LA-->>XG: avatar.speak_started / speak_ended（source_event_id）
+      XG->>SV: POST /api/dialogue/playback（開始・終了・エラー）
+    end
+    SV-->>OP: 会場の発話通知・音声エラーを表示
+    Note over XG: 全セグメント終了後、患者の返答を待つノードならマイクを再開
+  end
 ```
 
 オペレーター操作で確定したセリフは `/api/dialogue/events` のSSE経由で送られます。全件の受信を確認した後、最初のセグメントの `replace: true` により古い患者発話の処理・読み上げキューを取り消して新しいセリフへ切り替えます。再発話は、auto遷移で連結された説明全体や直前の逸脱応答を再生します。
