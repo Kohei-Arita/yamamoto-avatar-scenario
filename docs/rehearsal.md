@@ -79,4 +79,4 @@ Voting①（A=喫煙歴 / B=職業歴 / C=間質性肺炎の経過）× Voting�
 ## 既知の制約
 
 - 進行状態はサーバーメモリのみ。再起動でリセット（→ジャンプで復帰）
-- `placeholder: true` のノードは監修前の仮テキスト。差し替えは `data/scenarios/haigan-2026.json` の編集のみでよい
+- `placeholder: true` のノードは監修前の仮テキスト。差し替えは `data/scenarios/haigan-2026.json` の編集と、`src/features/dialogue/script-readings.js` への読みの追加で行う

@@ -1,6 +1,6 @@
 # 台本↔ノード対応表（haigan-2026）
 
-`data/scenarios/haigan-2026.json` の全ノードと台本の対応状況です。**「仮」のノードは監修前のプレースホルダー**（JSON上は `"placeholder": true`）で、正式台本が届いたら該当ノードの `doctorLines` を差し替えるだけで反映できます（コード変更不要）。
+`data/scenarios/haigan-2026.json` の全ノードと台本の対応状況です。**「仮」のノードは監修前のプレースホルダー**（JSON上は `"placeholder": true`）で、正式台本が届いたら該当ノードの `doctorLines` を差し替え、`src/features/dialogue/script-readings.js` に読み上げ用のひらがなを追加すれば反映できます（進行ロジックのコード変更は不要）。
 
 凡例 — 進み方: 🗣=患者の発話で進む / 🔘=オペレーター操作で進む / ⏩=自動で次と連続発話
 
@@ -68,5 +68,6 @@
 
 1. `data/scenarios/haigan-2026.json` を開き、対象ノードの `doctorLines` を台本原文に置き換える
 2. 転記が済んだら `"placeholder": true` の行を削除する
-3. `npm test` で全経路が通ることを確認（起動時にもスキーマ検証あり）
-4. 新しい医療用語を追加した場合は `src/features/dialogue/speech-pronunciation.js` に読み仮名を追加し、実機で読み上げ確認
+3. 変更・追加した文ごとに `src/features/dialogue/script-readings.js` へひらがなの読みを追加する（未登録の文は `script-readings.test.js` が検知）
+4. `npm test` で全経路と読みの登録漏れがないことを確認（起動時にもスキーマ検証あり）
+5. 台本以外にも効く医療用語は `src/features/dialogue/speech-pronunciation.js` に読み仮名を追加し、実機で読み上げ確認

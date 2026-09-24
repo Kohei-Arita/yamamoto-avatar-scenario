@@ -61,7 +61,7 @@ src/shared/http/sse.js    SSEヘッダー・イベント書き込みの共通化
   - `operator`: オペレーター操作でのみ遷移（Voting分岐）
   - `auto`: 発話後に待たず次ノードへ連結
 - `advance: []` は終端ノード。
-- `placeholder: true` は監修前の仮置きテキスト。**監修後はJSONの該当ノードのテキストを差し替えるだけで更新できる（コード変更不要）**。
+- `placeholder: true` は監修前の仮置きテキスト。**監修後はJSONの該当ノードのテキストを差し替え、`script-readings.js` に読みを追加すれば更新できる（進行ロジックのコード変更は不要）**。
 - 逸脱時の定型応答は `globalDeviationReplies`（ノード単位は `onDeviation` で上書き）。
 
 ## intent-matcher（2段構え）
@@ -76,6 +76,8 @@ src/shared/http/sse.js    SSEヘッダー・イベント書き込みの共通化
 ## 発話生成の2モード（SCENARIO_SPEECH_MODE）
 
 本番は `fixed` のみを使う。`NODE_ENV=production` では `paraphrase` を起動時に拒否する。読み仮名への変換と文単位の分割は行うが、ユーザーの言い回しに合わせて応答内容を変更しない。
+
+読み上げ用テキスト（speechText）は、まず `script-readings.js` の台本文→ひらがな表で文単位に置き換え、次に `speech-pronunciation.js` の語単位の読み仮名を適用する。字幕とエコー判定は漢字の台本のまま使う。台本の全文が表に登録されていることは `script-readings.test.js` で検証する。
 
 | モード                         | 動作                                                                                                                 |
 | ------------------------------ | -------------------------------------------------------------------------------------------------------------------- |

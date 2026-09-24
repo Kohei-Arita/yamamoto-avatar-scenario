@@ -81,12 +81,13 @@ npm run dev   # → http://localhost:3000
 
 ## 台本（シナリオ）の編集
 
-台本は `data/scenarios/haigan-2026.json` に**すべて**入っています。セリフの修正・監修反映はこのJSONの編集だけで完結し、コード変更は不要です。
+台本は `data/scenarios/haigan-2026.json` に**すべて**入っています。セリフの修正・監修反映はこのJSONの編集で行い、進行ロジックのコード変更は不要です。ただし読み上げ用のひらがな表（下記）への追加は必要です。
 
 - `"placeholder": true` のノードは監修前の仮テキストです。どこが仮のままかは [docs/scenario-map.md](docs/scenario-map.md) を参照
 - 差し替え後は `npm test` で全経路（Voting①3分岐 × Voting②3分岐 = 9経路）の通過を自動確認できます
 - 起動時にスキーマ検証され、不正なJSON（未定義ノード参照など）はエラーで停止します
-- 新しい医療用語を足したら `src/features/dialogue/speech-pronunciation.js` に読み仮名を追加してください（字幕は漢字のまま、音声のみ読み仮名変換）
+- セリフ（`doctorLines` / `globalDeviationReplies`）を追加・変更したら、`src/features/dialogue/script-readings.js` に**文単位のひらがな読み**を追加してください。未登録の文が残ると `npm test`（`script-readings.test.js`）が失敗します。字幕・エコー判定は漢字の台本のまま、音声（speechText）だけを読みに置き換えます
+- 台本以外にも効く医療用語の読み仮名は `src/features/dialogue/speech-pronunciation.js` に追加します（文単位の読みを適用した後に語単位で置換）
 
 ## 本番オペレーション
 
