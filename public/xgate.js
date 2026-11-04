@@ -216,7 +216,7 @@ chromaKeyToggle?.addEventListener("change", () => {
 document.addEventListener("mousemove", showHudTemporarily);
 
 // 認証済み画面のオペレーター用ショートカット(?shortcuts=1 で有効)。
-// 1/2/3=Voting分岐A/B/C、n=次へ(強制)、r=再発話。既存の f / s とは衝突しない。
+// 1/2/3/4=Voting分岐A/B/C/D、n=次へ(強制)、r=再発話。既存の f / s とは衝突しない。
 let operatorBusy = false;
 async function callOperatorApi(path, body = {}) {
   if (!operatorShortcuts || !manager.isStarted() || operatorBusy || !operatorState) {
@@ -253,7 +253,7 @@ async function callOperatorApi(path, body = {}) {
   }
 }
 
-const OPERATOR_BRANCH_KEYS = { 1: "A", 2: "B", 3: "C" };
+const OPERATOR_BRANCH_KEYS = { 1: "A", 2: "B", 3: "C", 4: "D" };
 
 let operatorState = null;
 
@@ -316,7 +316,7 @@ document.addEventListener("keydown", (event) => {
     return;
   }
 
-  if (key === "1" || key === "2" || key === "3") {
+  if (key === "1" || key === "2" || key === "3" || key === "4") {
     const branch = resolveOperatorBranch(Number(key));
 
     if (branch) {

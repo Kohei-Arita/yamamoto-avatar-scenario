@@ -7,6 +7,10 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import env from "../src/config/env.js";
 import { registerKnownSessionId } from "../src/features/dialogue/session-registry.js";
+import { loadScenarioFromFile } from "../src/features/scenario/scenario-loader.js";
+import { pullCompletedSpeechSegments } from "../src/features/dialogue/streaming-speech.js";
+
+const scenario = loadScenarioFromFile("./data/scenarios/haigan-2026.json");
 
 env.operatorToken = "browser-smoke-test-token";
 env.scenarioIntentLlm = false;
@@ -289,14 +293,17 @@ try {
   );
   await stage.evaluate("window.__room.patient('はい、よろしくお願いします。')");
   await until(
-    () => stage.evaluate("window.__spoken.some(text => text.includes('体重減少')) && window.__mic"),
+    () =>
+      stage.evaluate(
+        "window.__spoken.some(text => text.includes('たいじゅうげんしょう')) && window.__mic"
+      ),
     "natural greeting reply"
   );
   await stage.evaluate("window.__room.patient('咳も痰もありません。')");
   await until(
     () =>
       stage.evaluate(
-        "window.__spoken.some(text => text.includes('症状はないけれど')) && window.__mic"
+        "window.__spoken.some(text => text.includes('しょうじょうはないけれど')) && window.__mic"
       ),
     "negated symptoms"
   );
@@ -320,11 +327,108 @@ try {
   await until(() => stage.evaluate("window.__mic === false"), "operator pause");
   await operator.evaluate("document.querySelector('#inputBtn').click()");
   await until(() => stage.evaluate("window.__mic === true"), "operator resume");
+  // 操作画面を開いた後は会場タブを前面に戻し、模擬発話タイマーの背景タブ抑制を避ける。
+  await stage.client.send("Page.bringToFront");
   await stage.evaluate("document.dispatchEvent(new KeyboardEvent('keydown', { key: 's' }))");
   assert.equal(
     await stage.evaluate("document.querySelector('#connectionState').textContent"),
     "connected"
   );
+
+  await stage.evaluate(
+    "window.__room.patient('普段は普通に生活できています。階段や坂道では少し息が切れることがあります。')"
+  );
+  await until(
+    () =>
+      operator.evaluate(
+        "document.querySelector('#stateNode').textContent.includes('s1_voting1_wait') && document.querySelectorAll('#branchButtons button').length === 4"
+      ),
+    "four interview options"
+  );
+  await until(() => stage.evaluate("window.__mic === false"), "interview voting mute");
+  await operator.evaluate("document.querySelectorAll('#branchButtons button')[3].click()");
+  await until(
+    () =>
+      stage.evaluate(
+        "window.__spoken.some(text => text.includes('のんでいるおくすり')) && window.__mic"
+      ),
+    "medication branch D"
+  );
+  await stage.evaluate("window.__room.patient('アムロジピンを飲んでいます。')");
+  await until(
+    () =>
+      stage.evaluate(
+        "window.__spoken.some(text => text.includes('ここからけんさけっか')) && window.__mic"
+      ),
+    "await imaging cue"
+  );
+  assert.equal(
+    await stage.evaluate("window.__spoken.some(text => text.includes('みぎかよう'))"),
+    false
+  );
+  await stage.evaluate("window.__room.patient('PET画像を提示します。')");
+  await until(
+    () =>
+      stage.evaluate(
+        "window.__spoken.some(text => text.includes('リンパせつてんい')) && window.__mic"
+      ),
+    "PET cue starts imaging and pathology"
+  );
+  assert.equal(
+    await stage.evaluate("window.__spoken.some(text => text.includes('みぎかよう'))"),
+    true
+  );
+  await stage.evaluate(
+    "window.__room.patient('やはり肺がんなのですね。手術で取れば治るのでしょうか。')"
+  );
+  await until(
+    () =>
+      stage.evaluate(
+        "window.__spoken.some(text => text.includes('いちばんじゅうし')) && window.__mic"
+      ),
+    "patient values question"
+  );
+  await stage.evaluate(
+    "window.__room.patient('特に強い希望はありません。ただ、リスクの高い治療はしたくありません。')"
+  );
+  await until(
+    () =>
+      stage.evaluate(
+        "window.__spoken.some(text => text.includes('はずせないよてい')) && window.__mic"
+      ),
+    "wedding question"
+  );
+  await stage.evaluate(
+    "window.__room.patient('3か月後に孫の結婚式があります。それにはできれば出たいです。')"
+  );
+  await until(
+    () =>
+      operator.evaluate(
+        "document.querySelector('#stateNode').textContent.includes('s2_voting2_wait') && document.querySelectorAll('#branchButtons button').length === 4"
+      ),
+    "four treatment options"
+  );
+  await until(() => stage.evaluate("window.__mic === false"), "treatment voting mute");
+  // 会場側のショートカット用状態は2秒ごとのポーリングで同期される。
+  await delay(2100);
+  const treatmentStart = await stage.evaluate("window.__spoken.length");
+  await stage.evaluate("document.dispatchEvent(new KeyboardEvent('keydown', { key: '4' }))");
+  await until(
+    () =>
+      stage.evaluate("window.__spoken.some(text => text.includes('おだいじになさってください'))"),
+    "fourth shortcut reads treatment through closing",
+    30_000
+  );
+  const expectedTreatment = ["v2_chemo", "s2_closing"].flatMap((nodeId) =>
+    pullCompletedSpeechSegments(
+      scenario.nodes.find((node) => node.id === nodeId).doctorLines.join("")
+    ).segments.map((segment) => segment.speechText)
+  );
+  assert.deepEqual(
+    await stage.evaluate(`window.__spoken.slice(${treatmentStart})`),
+    expectedTreatment
+  );
+  assert.equal(await stage.evaluate("window.__mic"), false);
 
   const second = await page(`${base}/xgate?autostart=1`);
   await until(
@@ -337,7 +441,7 @@ try {
   assert.equal(issued, 1, "二重起動ではLiveAvatarセッションを発行しない");
   assert.deepEqual(exceptions, []);
   console.log(
-    "Browser smoke passed: login, greeting, negation, operator pause/resume, stage shortcuts, Web Lock. External services mocked."
+    "Browser smoke passed: login, greeting, negation, operator pause/resume, four-way voting, PET cue, complete treatment playback, stage shortcuts, Web Lock. External services mocked."
   );
 } catch (error) {
   for (const page of pages) {
@@ -360,5 +464,5 @@ try {
   if (chrome.exitCode === null && !spawnError)
     await Promise.race([new Promise((resolve) => chrome.once("exit", resolve)), delay(3000)]);
   if (chrome.exitCode === null && !spawnError) chrome.kill("SIGKILL");
-  await rm(profile, { recursive: true, force: true });
+  await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }

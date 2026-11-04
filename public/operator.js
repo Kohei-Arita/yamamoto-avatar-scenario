@@ -20,7 +20,7 @@ const stateInput = document.getElementById("stateInput");
 const stateConnection = document.getElementById("stateConnection");
 
 const POLL_INTERVAL_MS = 1500;
-const BRANCH_LABELS = { A: "A", B: "B", C: "C" };
+const BRANCH_LABELS = { A: "A", B: "B", C: "C", D: "D" };
 
 let token = sessionStorage.getItem("operatorToken") || "";
 let pollTimer = null;
