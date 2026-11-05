@@ -408,3 +408,82 @@ test("起動準備中にサーバーが再起動しても、同じversionの旧�
   );
   assert.equal(rooms[0].mic.includes(true), false);
 });
+
+test("15分の投票待ちでも入力を閉じて接続維持を続け、一時失敗後も再試行する", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: 1000 });
+  const keptAlive = [];
+  const { manager, rooms, state } = fixture({
+    keepLiveAvatarSessionAlive: async (sessionId) => {
+      keptAlive.push(sessionId);
+      if (keptAlive.length === 1) throw new Error("temporary network failure");
+    }
+  });
+  state.nodeId = "s2_voting2_wait";
+  state.acceptsPatientInput = false;
+  const starting = manager.start();
+  await tick();
+  t.mock.timers.tick(400);
+  await starting;
+  finishSpeech(rooms[0]);
+  await tick();
+
+  for (let minute = 1; minute <= 15; minute += 1) {
+    t.mock.timers.tick(60_000);
+    await tick();
+    assert.equal(keptAlive.length, minute);
+    assert.equal(manager.isStarted(), true);
+    assert.equal(rooms[0].mic.includes(true), false);
+  }
+  assert.deepEqual(keptAlive, Array(15).fill("session-1"));
+  assert.equal(rooms[0].commands.length, 1, "投票待ちの間に台詞を勝手に再生しない");
+
+  await manager.stop();
+  t.mock.timers.tick(120_000);
+  await tick();
+  assert.equal(keptAlive.length, 15, "停止後は接続維持要求を送らない");
+});
+
+test("接続維持の応答待ちで切断・再接続しても、旧セッションの更新を再開しない", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: 1000 });
+  const requests = [];
+  let finishOldRequest;
+  const { manager, rooms, state } = fixture({
+    keepLiveAvatarSessionAlive: async (sessionId, { signal }) => {
+      requests.push({ sessionId, signal });
+      if (sessionId === "session-1")
+        await new Promise((resolve) => {
+          finishOldRequest = resolve;
+        });
+    }
+  });
+  state.nodeId = "s1_voting1_wait";
+  state.acceptsPatientInput = false;
+  const starting = manager.start();
+  await tick();
+  t.mock.timers.tick(400);
+  await starting;
+  finishSpeech(rooms[0]);
+  await tick();
+  t.mock.timers.tick(60_000);
+  await tick();
+  assert.equal(requests.length, 1);
+
+  rooms[0].callbacks.onDisconnected("network");
+  assert.equal(requests[0].signal.aborted, true);
+  const restarting = manager.start();
+  await tick();
+  t.mock.timers.tick(400);
+  await restarting;
+  finishSpeech(rooms[1]);
+  finishOldRequest();
+  await tick();
+  t.mock.timers.tick(60_000);
+  await tick();
+  assert.deepEqual(
+    requests.map((request) => request.sessionId),
+    ["session-1", "session-2"]
+  );
+  assert.equal(manager.getSessionId(), "session-2");
+  assert.equal(rooms[1].mic.includes(true), false);
+  await manager.stop();
+});

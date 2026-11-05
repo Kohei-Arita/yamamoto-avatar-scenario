@@ -2,6 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import env from "../../config/env.js";
 import { registerKnownSessionId } from "./session-registry.js";
+import { loadScenarioFromFile } from "../scenario/scenario-loader.js";
+
+const scenario = loadScenarioFromFile("./data/scenarios/haigan-2026.json");
 
 // LLM・operator認証をテスト用に固定してからapp（route群）を読み込む
 env.scenarioIntentLlm = false;
@@ -47,6 +50,37 @@ function parseSseEvents(rawText) {
       return { event, data: data ? JSON.parse(data) : null };
     })
     .filter((entry) => entry.event);
+}
+
+async function* readSseEvents(reader) {
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) return;
+    buffer += decoder.decode(value, { stream: true });
+    let boundary;
+    while ((boundary = buffer.indexOf("\n\n")) !== -1) {
+      yield* parseSseEvents(buffer.slice(0, boundary));
+      buffer = buffer.slice(boundary + 2);
+    }
+  }
+}
+
+async function openDialogueEvents(sessionId) {
+  const controller = new AbortController();
+  const response = await fetch(`${baseUrl}/api/dialogue/events?sessionId=${sessionId}`, {
+    signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5000)])
+  });
+  assert.equal(response.status, 200);
+  const reader = response.body.getReader();
+  return {
+    events: readSseEvents(reader),
+    async close() {
+      controller.abort();
+      await reader.cancel().catch(() => {});
+    }
+  };
 }
 
 async function postStream(sessionId, text) {
@@ -224,3 +258,98 @@ test("オペレーターSSEには置換フラグと入力状態を付ける", as
     await reader.cancel().catch(() => {});
   }
 });
+
+for (const [branch, nodeId] of Object.entries({
+  voting2_A: "v2_perioperative",
+  voting2_B: "v2_surgery",
+  voting2_C: "v2_radiation",
+  voting2_D: "v2_chemo"
+})) {
+  test(`${branch}: 治療説明と締めを全件SSE配信し、再接続でも全文を復元する`, async () => {
+    const sessionId = `treatment-sse-${branch}`;
+    registerKnownSessionId(sessionId);
+    const expectedLines = [nodeId, "s2_closing"].flatMap(
+      (id) => scenario.nodes.find((node) => node.id === id).doctorLines
+    );
+    const expectedSentences = expectedLines.flatMap((line) =>
+      line.match(/[^。！？!?]+[。！？!?]/gu)
+    );
+    const post = (action, body) =>
+      fetch(`${baseUrl}/api/operator/${action}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId, ...body })
+      });
+    const jumpResponse = await post("jump", { nodeId: "s2_voting2_wait" });
+    assert.equal(jumpResponse.status, 200);
+    const { state: waiting } = await jumpResponse.json();
+    assert.equal(waiting.acceptsPatientInput, false);
+
+    const stream = await openDialogueEvents(sessionId);
+    const received = [];
+    let state;
+    try {
+      const connected = (await stream.events.next()).value;
+      assert.equal(connected.event, "connected");
+      assert.equal(connected.data.state.nodeId, "s2_voting2_wait");
+
+      const response = await post("branch", {
+        branch,
+        expectedVersion: waiting.version,
+        expectedEpoch: waiting.epoch
+      });
+      assert.equal(response.status, 200);
+      const result = await response.json();
+      state = result.state;
+      assert.equal(result.delivery.delivered, true);
+      assert.equal(result.delivery.segmentCount, expectedSentences.length);
+      assert.equal(state.nodeId, "s2_closing");
+      assert.equal(state.isTerminal, true);
+      assert.equal(state.acceptsPatientInput, false);
+
+      for (let index = 0; index < expectedSentences.length; index += 1) {
+        const event = (await stream.events.next()).value;
+        assert.equal(event.event, "speech_segment");
+        const segment = event.data;
+        assert.equal(segment.segmentIndex, index);
+        assert.equal(segment.segmentCount, expectedSentences.length);
+        assert.equal(segment.speechId, state.speechId);
+        assert.equal(segment.state.speechId, state.speechId);
+        assert.equal(segment.state.version, state.version);
+        assert.equal(segment.state.epoch, state.epoch);
+        assert.equal(segment.state.acceptsPatientInput, false);
+        assert.equal(segment.replace, index === 0);
+        assert.equal(segment.subtitleText, expectedSentences[index]);
+        assert.equal(segment.text, segment.speechText);
+        assert.ok(segment.speechText.length > 0);
+        assert.doesNotMatch(segment.speechText, /[\p{Script=Han}0-9A-Za-z#]/u);
+        received.push(segment);
+      }
+    } finally {
+      await stream.close();
+    }
+
+    // 現在ノードは締めでも、再接続時には選択した治療説明を含む全セグメントを返す。
+    const reconnected = await openDialogueEvents(sessionId);
+    try {
+      const event = (await reconnected.events.next()).value;
+      assert.equal(event.event, "connected");
+      assert.equal(event.data.state.nodeId, "s2_closing");
+      assert.equal(event.data.state.speechId, state.speechId);
+      assert.equal(event.data.state.version, state.version);
+      assert.equal(event.data.state.acceptsPatientInput, false);
+      const restored = event.data.openingSegments;
+      assert.equal(restored.length, received.length);
+      for (const [index, segment] of restored.entries()) {
+        const original = received[index];
+        assert.equal(segment.segmentIndex, index);
+        assert.equal(segment.segmentCount, received.length);
+        assert.equal(segment.speechId, original.speechId);
+        assert.equal(segment.subtitleText, original.subtitleText);
+        assert.equal(segment.speechText, original.speechText);
+      }
+    } finally {
+      await reconnected.close();
+    }
+  });
+}
