@@ -331,10 +331,17 @@ export function createSelfControlledConversation({
     microphone.setMuted(muted);
   }
 
-  function applyScenarioState(state) {
+  function applyScenarioState(state, { replace = false } = {}) {
     if (!state || disposed) return !disposed;
     if (scenarioEpoch && state.epoch && scenarioEpoch !== state.epoch) return false;
     if (scenarioVersion !== undefined && state.version < scenarioVersion) return false;
+    if (replace) {
+      cancelCurrentResponse({ syncMicrophone: false });
+      clearBuffer();
+      clearRecentFinalizedTranscript();
+      speechFault = false;
+      inputCutoff = null;
+    }
     if (inputCutoff === "operator" && state.version > scenarioVersion) inputCutoff = null;
     scenarioVersion = state.version;
     scenarioEpoch = state.epoch || scenarioEpoch;

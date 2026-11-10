@@ -192,7 +192,7 @@ test("operator branchはoperator遷移ノード以外で409、待機ノードで
   });
   const data = await accepted.json();
   assert.equal(accepted.status, 200);
-  assert.equal(data.state.nodeId, "v1_occupation");
+  assert.equal(data.state.nodeId, "v1_treatment_risk");
 
   const unknownBranch = await fetch(`${baseUrl}/api/operator/branch`, {
     method: "POST",
@@ -230,7 +230,7 @@ test("operatorの二重操作を進行番号で拒否し、入力停止はサー
   assert.equal(reply.events[0].data.state.nodeId, "s1_symptoms");
 });
 
-test("オペレーターSSEには置換フラグと入力状態を付ける", async () => {
+test("無言の投票待ちへのジャンプも置換フラグと入力停止状態をSSE配信する", async () => {
   const sessionId = "operator-events-test";
   registerKnownSessionId(sessionId);
   const controller = new AbortController();
@@ -249,7 +249,7 @@ test("オペレーターSSEには置換フラグと入力状態を付ける", as
     }).then((res) => res.json());
     assert.equal(result.delivery.delivered, true);
     const events = parseSseEvents(new TextDecoder().decode((await reader.read()).value));
-    assert.equal(events[0].event, "speech_segment");
+    assert.equal(events[0].event, "scenario_state");
     assert.equal(events[0].data.replace, true);
     assert.equal(events[0].data.state.acceptsPatientInput, false);
     assert.equal(events[0].data.state.version, result.state.version);
@@ -265,12 +265,10 @@ for (const [branch, nodeId] of Object.entries({
   voting2_C: "v2_radiation",
   voting2_D: "v2_chemo"
 })) {
-  test(`${branch}: 治療説明と締めを全件SSE配信し、再接続でも全文を復元する`, async () => {
+  test(`${branch}: 治療の最初の応答だけを配信し、患者待ちと再接続で維持する`, async () => {
     const sessionId = `treatment-sse-${branch}`;
     registerKnownSessionId(sessionId);
-    const expectedLines = [nodeId, "s2_closing"].flatMap(
-      (id) => scenario.nodes.find((node) => node.id === id).doctorLines
-    );
+    const expectedLines = scenario.nodes.find((node) => node.id === nodeId).doctorLines;
     const expectedSentences = expectedLines.flatMap((line) =>
       line.match(/[^。！？!?]+[。！？!?]/gu)
     );
@@ -303,9 +301,9 @@ for (const [branch, nodeId] of Object.entries({
       state = result.state;
       assert.equal(result.delivery.delivered, true);
       assert.equal(result.delivery.segmentCount, expectedSentences.length);
-      assert.equal(state.nodeId, "s2_closing");
-      assert.equal(state.isTerminal, true);
-      assert.equal(state.acceptsPatientInput, false);
+      assert.equal(state.nodeId, nodeId);
+      assert.equal(state.isTerminal, false);
+      assert.equal(state.acceptsPatientInput, true);
 
       for (let index = 0; index < expectedSentences.length; index += 1) {
         const event = (await stream.events.next()).value;
@@ -317,7 +315,7 @@ for (const [branch, nodeId] of Object.entries({
         assert.equal(segment.state.speechId, state.speechId);
         assert.equal(segment.state.version, state.version);
         assert.equal(segment.state.epoch, state.epoch);
-        assert.equal(segment.state.acceptsPatientInput, false);
+        assert.equal(segment.state.acceptsPatientInput, true);
         assert.equal(segment.replace, index === 0);
         assert.equal(segment.subtitleText, expectedSentences[index]);
         assert.equal(segment.text, segment.speechText);
@@ -329,15 +327,15 @@ for (const [branch, nodeId] of Object.entries({
       await stream.close();
     }
 
-    // 現在ノードは締めでも、再接続時には選択した治療説明を含む全セグメントを返す。
+    // 再接続でも患者の返答を待つ位置を保ち、その応答の全セグメントを復元する。
     const reconnected = await openDialogueEvents(sessionId);
     try {
       const event = (await reconnected.events.next()).value;
       assert.equal(event.event, "connected");
-      assert.equal(event.data.state.nodeId, "s2_closing");
+      assert.equal(event.data.state.nodeId, nodeId);
       assert.equal(event.data.state.speechId, state.speechId);
       assert.equal(event.data.state.version, state.version);
-      assert.equal(event.data.state.acceptsPatientInput, false);
+      assert.equal(event.data.state.acceptsPatientInput, true);
       const restored = event.data.openingSegments;
       assert.equal(restored.length, received.length);
       for (const [index, segment] of restored.entries()) {

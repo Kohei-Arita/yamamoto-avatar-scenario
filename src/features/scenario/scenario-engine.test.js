@@ -1,4 +1,5 @@
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import env from "../../config/env.js";
 import { loadScenarioFromFile } from "./scenario-loader.js";
@@ -8,19 +9,45 @@ import { createScenarioEngine } from "./scenario-engine.js";
 env.scenarioIntentLlm = false;
 
 const scenario = loadScenarioFromFile("./data/scenarios/haigan-2026.json");
-const nodesById = new Map(scenario.nodes.map((node) => [node.id, node]));
+// 転記元の会話を独立した期待値として使い、患者の各返答で一往復だけ進むことを確認する。
+const source = readFileSync("./data/scenarios/haigan-2026-script.md", "utf8");
+const scriptSections = source
+  .split(/^#{2,3} .+$/mu)
+  .map((section) =>
+    [...section.matchAll(/\*\*(AI山本医師|患者)\*\*：「(.*)」/gu)].map(([, role, text]) => ({
+      role,
+      text: text.trim()
+    }))
+  )
+  .filter((turns) => turns.length);
 const interviewBranches = {
-  voting1_A: { nodeId: "v1_smoking", answer: "1日40本を52年間、今も吸っています。" },
-  voting1_B: { nodeId: "v1_occupation", answer: "タクシードライバーです。" },
-  voting1_C: { nodeId: "v1_ip_history", answer: "高血圧症と間質性肺炎を指摘されています。" },
-  voting1_D: { nodeId: "v1_medication", answer: "アムロジピンを飲んでいます。" }
+  voting1_A: { nodeId: "v1_risk_factors", turns: scriptSections[1] },
+  voting1_B: { nodeId: "v1_treatment_risk", turns: scriptSections[2] },
+  voting1_C: { nodeId: "v1_concerns", turns: scriptSections[3] }
 };
 const treatmentBranches = {
-  voting2_A: "v2_perioperative",
-  voting2_B: "v2_surgery",
-  voting2_C: "v2_radiation",
-  voting2_D: "v2_chemo"
+  voting2_A: { nodeId: "v2_perioperative", turns: scriptSections[6] },
+  voting2_B: { nodeId: "v2_surgery", turns: scriptSections[7] },
+  voting2_C: { nodeId: "v2_radiation", turns: scriptSections[8] },
+  voting2_D: { nodeId: "v2_chemo", turns: scriptSections[9] }
 };
+
+async function runScript(engine, sessionId, turns, initial, trailing = []) {
+  let result = initial;
+  let cursor = 0;
+  while (cursor < turns.length) {
+    const expected = [];
+    while (turns[cursor]?.role === "AI山本医師") expected.push(turns[cursor++].text);
+    assert.deepEqual(result.lines, cursor === turns.length ? [...expected, ...trailing] : expected);
+    if (cursor === turns.length) break;
+    assert.equal(engine.getInputState(sessionId).acceptsPatientInput, true);
+    assert.equal(turns[cursor].role, "患者");
+    result = await engine.handlePatientUtterance(sessionId, turns[cursor++].text);
+    assert.equal(result.kind, "advance");
+  }
+  if (turns.at(-1).role === "患者") assert.deepEqual(result.lines, trailing);
+  return result;
+}
 
 let sessionCounter = 0;
 
@@ -29,113 +56,36 @@ function newSessionId() {
   return `engine-test-${sessionCounter}`;
 }
 
-async function runScene1(engine, sessionId, voting1Branch) {
-  // s1_greeting → s1_symptoms
-  let result = await engine.handlePatientUtterance(
-    sessionId,
-    "はい。近くの病院で、年に1回胸のレントゲンを撮っているんですが、右の肺に影があると言われました。"
-  );
-  assert.equal(result.nodeId, "s1_symptoms");
-
-  // s1_symptoms → s1_adl
-  result = await engine.handlePatientUtterance(
-    sessionId,
-    "特にありません。自分では元気なつもりです。"
-  );
-  assert.equal(result.intent, "no_symptoms");
-  assert.equal(result.nodeId, "s1_adl");
-
-  // s1_adl → s1_adl_ack →(auto)→ s1_voting1_wait
-  result = await engine.handlePatientUtterance(
-    sessionId,
-    "普段は普通に生活できています。階段や坂道では少し息が切れることがあります。"
-  );
-  assert.equal(result.nodeId, "s1_voting1_wait");
-  assert.equal(engine.getInputState(sessionId).acceptsPatientInput, false);
-  assert.deepEqual(
-    engine.getSessionState(sessionId).awaitingBranches,
-    Object.entries(interviewBranches).map(([branch, { nodeId }]) => ({ branch, next: nodeId }))
-  );
-
-  // Voting① 分岐
-  result = engine.applyOperatorBranch(sessionId, voting1Branch);
-  assert.equal(result.kind, "advance");
-  const interview = interviewBranches[voting1Branch];
-  assert.equal(result.nodeId, interview.nodeId);
-  assert.equal(engine.getInputState(sessionId).acceptsPatientInput, true);
-
-  // 分岐問診への回答 →(ack + auto)→ s1_close
-  result = await engine.handlePatientUtterance(sessionId, interview.answer);
-  assert.equal(result.nodeId, "s1_close");
-  assert.deepEqual(result.lines, [
-    ...nodesById.get(`${interview.nodeId}_ack`).doctorLines,
-    ...nodesById.get("s1_close").doctorLines
-  ]);
-
-  // 単なる相づちでは画像説明を始めず、提示の合図を待つ。
-  result = await engine.handlePatientUtterance(sessionId, "はい");
-  assert.equal(result.nodeId, "s1_close");
-
-  // 「PET画像を提示します」の発話でシーン2へ（s2_imaging →(auto)→ s2_pathology まで連続発話）
-  result = await engine.handlePatientUtterance(sessionId, "PET画像を提示します");
-  assert.equal(result.intent, "present_imaging");
-  assert.equal(result.nodeId, "s2_pathology");
-  assert.equal(result.scene, 2);
-  assert.deepEqual(result.lines, [
-    ...nodesById.get("s2_imaging").doctorLines,
-    ...nodesById.get("s2_pathology").doctorLines
-  ]);
-}
-
-async function runScene2(engine, sessionId, voting2Branch) {
-  // 「手術で取れば治るのでしょうか」→ s2_cure_answer →(auto)→ s2_values
-  let result = await engine.handlePatientUtterance(
-    sessionId,
-    "やはり肺がんなのですね。手術で取れば治るのでしょうか。"
-  );
-  assert.equal(result.intent, "asks_cure");
-  assert.equal(result.nodeId, "s2_values");
-
-  // 価値観確認の流れ
-  result = await engine.handlePatientUtterance(
-    sessionId,
-    "特に強い希望はありません。ただ、リスクの高い治療はしたくありません。"
-  );
-  assert.equal(result.nodeId, "s2_values_risk_ack");
-
-  result = await engine.handlePatientUtterance(
-    sessionId,
-    "3か月後に孫の結婚式があります。それにはできれば出たいです。"
-  );
-  assert.equal(result.nodeId, "s2_voting2_wait");
-  assert.equal(engine.getInputState(sessionId).acceptsPatientInput, false);
-  assert.deepEqual(
-    engine.getSessionState(sessionId).awaitingBranches,
-    Object.entries(treatmentBranches).map(([branch, next]) => ({ branch, next }))
-  );
-
-  // Voting② 分岐 →(auto)→ s2_closing
-  result = engine.applyOperatorBranch(sessionId, voting2Branch);
-  assert.equal(result.nodeId, "s2_closing");
-  assert.deepEqual(result.lines, [
-    ...nodesById.get(treatmentBranches[voting2Branch]).doctorLines,
-    ...nodesById.get("s2_closing").doctorLines
-  ]);
-  assert.deepEqual(engine.repeat(sessionId).lines, result.lines);
-
-  const state = engine.getSessionState(sessionId);
-  assert.equal(state.isTerminal, true);
-  assert.equal(engine.getInputState(sessionId).acceptsPatientInput, false);
-}
-
-test("完成版の台詞でVoting①4分岐 × Voting②4分岐の16経路をすべて通せる", async () => {
+test("新台本の問診3分岐 × 治療4分岐の全12経路を、患者の返答ごとに進行する", async () => {
   const engine = createScenarioEngine({ scenario });
-
-  for (const voting1 of Object.keys(interviewBranches)) {
-    for (const voting2 of Object.keys(treatmentBranches)) {
-      const sessionId = newSessionId();
-      await runScene1(engine, sessionId, voting1);
-      await runScene2(engine, sessionId, voting2);
+  for (const [voting1, interview] of Object.entries(interviewBranches)) {
+    for (const [voting2, treatment] of Object.entries(treatmentBranches)) {
+      const id = newSessionId();
+      await runScript(engine, id, scriptSections[0], engine.getNodeLines(id));
+      assert.equal(engine.getInputState(id).nodeId, "s1_voting1_wait");
+      assert.equal(engine.getInputState(id).acceptsPatientInput, false);
+      assert.deepEqual(
+        engine.getSessionState(id).awaitingBranches,
+        Object.entries(interviewBranches).map(([branch, { nodeId }]) => ({ branch, next: nodeId }))
+      );
+      const interviewStart = engine.applyOperatorBranch(id, voting1);
+      assert.equal(interviewStart.nodeId, interview.nodeId);
+      await runScript(engine, id, interview.turns, interviewStart, [scriptSections[4][0].text]);
+      assert.equal(engine.getInputState(id).nodeId, "s1_close");
+      const ignored = await engine.handlePatientUtterance(id, "司会から検査結果を説明します。");
+      assert.equal(ignored.kind, "ignored");
+      assert.deepEqual(ignored.lines, []);
+      const imaging = await engine.handlePatientUtterance(id, "PET画像を提示します。");
+      await runScript(engine, id, scriptSections[5], imaging);
+      assert.equal(engine.getInputState(id).nodeId, "s2_voting2_wait");
+      assert.equal(engine.getInputState(id).acceptsPatientInput, false);
+      const treatmentStart = engine.applyOperatorBranch(id, voting2);
+      assert.equal(treatmentStart.nodeId, treatment.nodeId);
+      const last = await runScript(engine, id, treatment.turns, treatmentStart);
+      assert.equal(last.nodeId, "s2_closing");
+      assert.equal(engine.getSessionState(id).isTerminal, true);
+      assert.equal(engine.getInputState(id).acceptsPatientInput, false);
+      assert.deepEqual(engine.repeat(id).lines, last.lines);
     }
   }
 });
@@ -153,6 +103,111 @@ test("症状ありと答えた場合はredirect経由でVoting①待機に合流
   assert.equal(result.nodeId, "s1_voting1_wait");
 });
 
+test("症状を含む否定文を『症状なし』として進めず、曖昧なら聞き返す", async () => {
+  const engine = createScenarioEngine({ scenario });
+  for (const text of [
+    "胸が痛くて眠れない",
+    "息が苦しくて眠れない",
+    "咳は出ないけど息苦しいです",
+    "特に"
+  ]) {
+    const id = newSessionId();
+    engine.jumpTo(id, "s1_symptoms");
+    const result = await engine.handlePatientUtterance(id, text);
+    assert.notEqual(result.intent, "no_symptoms", text);
+    assert.notEqual(result.nodeId, "s1_adl", text);
+  }
+});
+
+test("司会待機は提示の明確な合図だけで再開し、説明・疑問・否定には無言で待つ", async () => {
+  const engine = createScenarioEngine({ scenario });
+  const id = newSessionId();
+  engine.jumpTo(id, "s1_close");
+  const before = engine.getInputState(id);
+  for (const text of [
+    "画像はまだ準備中です",
+    "検査って何ですか",
+    "PET画像を提示しますか？",
+    "PET画像を提示しません",
+    "まだ画像を提示しないでください",
+    "少し待ってください",
+    "『PET画像を提示します』という合図で再開します",
+    "はい"
+  ]) {
+    const result = await engine.handlePatientUtterance(id, text);
+    assert.equal(result.kind, "ignored", text);
+    assert.deepEqual(result.lines, []);
+    assert.deepEqual(result.state, before);
+  }
+  for (const text of [
+    "PET画像を提示します。",
+    "それでは、PET/CTの画像を提示します。",
+    "ペット画像を提示します"
+  ]) {
+    engine.jumpTo(id, "s1_close");
+    const result = await engine.handlePatientUtterance(id, text);
+    assert.equal(result.nodeId, "s2_pathology");
+    assert.equal(result.intentMethod, "rule");
+  }
+});
+
+test("聞き直しへのrevisionは、ノードとその時点の台詞を一緒に復元する", async () => {
+  const engine = createScenarioEngine({ scenario });
+  for (const target of ["s1_greeting", "s2_imaging"]) {
+    const id = newSessionId();
+    const opening = engine.jumpTo(id, target);
+    const before = engine.getInputState(id);
+    await engine.handlePatientUtterance(id, target === "s1_greeting" ? "すみません" : "はい");
+    const result = await engine.handlePatientUtterance(id, "すみません、もう一度お願いします", {
+      revision: true,
+      expectedVersion: before.version
+    });
+    assert.equal(result.nodeId, before.nodeId);
+    assert.equal(result.deviation, "repeat");
+    assert.deepEqual(result.lines, opening.lines);
+    assert.deepEqual(engine.repeat(id).lines, opening.lines);
+  }
+});
+
+test("無言で待った司会の断片も、結合再送で同じ位置から合図を判定する", async () => {
+  const engine = createScenarioEngine({ scenario });
+  const id = newSessionId();
+  engine.jumpTo(id, "s1_close");
+  const before = engine.getInputState(id);
+  assert.equal((await engine.handlePatientUtterance(id, "PET画像")).kind, "ignored");
+  const result = await engine.handlePatientUtterance(id, "PET画像を提示します。", {
+    revision: true,
+    expectedVersion: before.version
+  });
+  assert.equal(result.nodeId, "s2_pathology");
+  assert.equal(result.intent, "present_imaging");
+});
+
+test("全ノードに到達でき、自動遷移は循環せず、問診の4番目の選択肢を受け付けない", () => {
+  const nodes = new Map(scenario.nodes.map((node) => [node.id, node]));
+  const visited = new Set();
+  function visit(id) {
+    if (visited.has(id)) return;
+    visited.add(id);
+    for (const entry of nodes.get(id).advance) visit(entry.next);
+  }
+  visit(scenario.entryNode);
+  assert.equal(visited.size, scenario.nodes.length);
+  for (const node of scenario.nodes) {
+    let current = node;
+    const autoPath = new Set();
+    while (current.advance.some((entry) => entry.type === "auto")) {
+      assert.equal(autoPath.has(current.id), false, current.id);
+      autoPath.add(current.id);
+      current = nodes.get(current.advance.find((entry) => entry.type === "auto").next);
+    }
+  }
+  const engine = createScenarioEngine({ scenario });
+  const id = newSessionId();
+  engine.jumpTo(id, "s1_voting1_wait");
+  assert.throws(() => engine.applyOperatorBranch(id, "voting1_D"), /定義されていません/u);
+});
+
 test("否定文・保留依頼・台本外質問をキーワードだけで進めない", async () => {
   const engine = createScenarioEngine({ scenario });
   const sessionId = newSessionId();
@@ -162,7 +217,8 @@ test("否定文・保留依頼・台本外質問をキーワードだけで進�
   engine.jumpTo(sessionId, "s1_close");
   const paused = await engine.handlePatientUtterance(sessionId, "まだ画像を提示しないでください");
   assert.equal(paused.nodeId, "s1_close");
-  assert.equal(paused.deviation, "pause");
+  assert.equal(paused.kind, "ignored");
+  assert.deepEqual(paused.lines, []);
   engine.jumpTo(sessionId, "s2_pathology");
   const fees = await engine.handlePatientUtterance(sessionId, "手術の費用はいくらですか");
   assert.equal(fees.deviation, "medical_advice");
@@ -268,7 +324,7 @@ test("jump・reset・sayで進行を制御できる", async () => {
 
   const say = engine.getNodeLines(sessionId, null);
   assert.equal(say.nodeId, "s2_voting2_wait");
-  assert.ok(say.lines.length > 0);
+  assert.deepEqual(say.lines, []);
 
   const resetResult = engine.reset(sessionId);
   assert.equal(resetResult.nodeId, "s1_greeting");
@@ -309,10 +365,10 @@ test("分岐問診の直後に句読点断片が来ても台本を飛ばさな�
   await engine.handlePatientUtterance(sessionId, "階段では少し息が切れます");
   engine.applyOperatorBranch(sessionId, "voting1_A");
 
-  // 本番ログで発生した事象: 「。」だけの断片で v1_smoking → s1_close まで飛んだ
+  // 旧台本で発生した句読点だけによる誤進行が、新しい問診でも再発しないこと。
   const result = await engine.handlePatientUtterance(sessionId, "。");
   assert.equal(result.kind, "ignored");
-  assert.equal(engine.getSessionState(sessionId).nodeId, "v1_smoking");
+  assert.equal(engine.getSessionState(sessionId).nodeId, "v1_risk_factors");
 });
 
 test("相槌未満の一音は無視するが「はい」などの短答は進める", async () => {
@@ -335,7 +391,7 @@ test("言い直し(revision)は直前の患者遷移を巻き戻してから判�
   // s1_greeting → s1_symptoms
   await engine.handlePatientUtterance(sessionId, "こんにちは");
   // 発話が途切れた: 前半だけで s1_symptoms → s1_adl に進んでしまう
-  let result = await engine.handlePatientUtterance(sessionId, "特に");
+  let result = await engine.handlePatientUtterance(sessionId, "ありません");
   assert.equal(result.nodeId, "s1_adl");
 
   // 結合し直した発話が revision として再送される → s1_symptoms に巻き戻して判定
@@ -359,7 +415,7 @@ test("revisionでもoperator操作後は巻き戻さない", async () => {
   const result = await engine.handlePatientUtterance(sessionId, "はい、そうです", {
     revision: true
   });
-  assert.equal(result.nodeId, "v1_smoking");
+  assert.equal(result.nodeId, "v1_risk_factors");
   assert.equal(result.kind, "superseded");
 });
 
@@ -450,7 +506,7 @@ test("応答受信前の言い直しは遷移前の進行番号でも巻き戻�
   const id = newSessionId();
   engine.jumpTo(id, "s1_symptoms");
   const before = engine.getInputState(id);
-  await engine.handlePatientUtterance(id, "特に", { expectedVersion: before.version });
+  await engine.handlePatientUtterance(id, "ありません", { expectedVersion: before.version });
   const result = await engine.handlePatientUtterance(id, "特にありません", {
     revision: true,
     expectedVersion: before.version
@@ -462,13 +518,13 @@ test("応答受信前の言い直しは遷移前の進行番号でも巻き戻�
 test("再接続・再発話ではauto遷移前を含む台詞全体を復元する", () => {
   const engine = createScenarioEngine({ scenario });
   const id = newSessionId();
-  const reply = engine.jumpTo(id, "v2_surgery");
-  assert.equal(reply.nodeId, "s2_closing");
+  const reply = engine.jumpTo(id, "s2_imaging");
+  assert.equal(reply.nodeId, "s2_pathology");
   assert.deepEqual(engine.repeat(id).lines, reply.lines);
   const resumedId = newSessionId();
   engine.adoptProgress(id, resumedId);
   assert.deepEqual(engine.getNodeLines(resumedId).lines, reply.lines);
-  assert.equal(engine.getInputState(resumedId).acceptsPatientInput, false);
+  assert.equal(engine.getInputState(resumedId).acceptsPatientInput, true);
 });
 
 test("挨拶ノードでも手動入力停止を再接続へ引き継ぐ", () => {

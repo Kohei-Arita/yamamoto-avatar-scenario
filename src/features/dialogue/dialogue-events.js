@@ -38,6 +38,9 @@ export function broadcastSpeechSegments(sessionId, segments = [], state) {
   }
 
   for (const res of subscribers) {
+    if (segments.length === 0) {
+      writeSseEvent(res, "scenario_state", { state, replace: true });
+    }
     for (const [index, segment] of segments.entries()) {
       writeSseEvent(res, "speech_segment", {
         speechId: segment.speechId,

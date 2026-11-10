@@ -7,7 +7,7 @@ import {
   rewindLastPatientMove,
   rememberScenarioSpeech
 } from "./scenario.store.js";
-import { matchIntent } from "./intent-matcher.js";
+import { matchIntent, matchIntentByRules } from "./intent-matcher.js";
 import {
   buildDeviationLines,
   classifyDeviation,
@@ -174,19 +174,30 @@ export function createScenarioEngine({ scenario = null } = {}) {
 
     const anyEntry = getAdvanceEntries(node, "patient_any")[0];
     const intentEntries = getAdvanceEntries(node, "patient_intent");
+    function rememberPatientTurn(fromSpeechLines = session.lastSpeechLines) {
+      session.lastPatientMove = {
+        fromNodeId: node.id,
+        fromVersion: session.version,
+        fromSpeechLines: [...fromSpeechLines],
+        at: Date.now()
+      };
+    }
+    // 司会の説明中は明確な合図だけで再開する。雑談・質問・待機依頼にも割り込まない。
+    if (node.ignoreUnmatchedInput && !matchIntentByRules(text, intentEntries)) {
+      // 「PET画像」→「を提示します」の結合再送も、この待機位置から再判定する。
+      rememberPatientTurn();
+      return noSpeech("ignored");
+    }
     const control = classifyUtteranceControl(text);
 
     function deviationResult(category) {
+      const fromSpeechLines = [...session.lastSpeechLines];
       const lines =
         category === "repeat"
           ? getNodeLines(sessionId).lines
           : buildDeviationLines(category, node, currentScenario);
       rememberScenarioSpeech(session, lines);
-      session.lastPatientMove = {
-        fromNodeId: node.id,
-        fromVersion: session.version,
-        at: Date.now()
-      };
+      rememberPatientTurn(fromSpeechLines);
       return {
         kind: "deviation",
         deviation: category,
@@ -224,6 +235,7 @@ export function createScenarioEngine({ scenario = null } = {}) {
       const version = session.version;
       const match = await matchIntent(text, intentEntries, {
         doctorLine: node.doctorLines.at(-1) || "",
+        allowLlm: !node.ignoreUnmatchedInput,
         signal
       });
 

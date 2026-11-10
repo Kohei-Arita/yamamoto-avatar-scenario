@@ -65,6 +65,7 @@ export function getOrCreateScenarioSession(sessionId, entryNodeId) {
 export function moveScenarioSession(session, nodeId, via, lines = []) {
   const fromNodeId = session.nodeId;
   const fromVersion = session.version;
+  const fromSpeechLines = [...session.lastSpeechLines];
   session.nodeId = nodeId;
   if (session.recoveryRequired && ["operator:jump", "operator:reset"].includes(via)) {
     session.recoveryRequired = false;
@@ -81,7 +82,7 @@ export function moveScenarioSession(session, nodeId, via, lines = []) {
   // 患者発話による遷移だけを言い直し巻き戻しの対象として記録する。
   // operator操作(branch/next/jump/reset)が入ったら巻き戻し対象を消す。
   if (via === "patient_any" || via.startsWith("intent:")) {
-    session.lastPatientMove = { fromNodeId, fromVersion, at: Date.now() };
+    session.lastPatientMove = { fromNodeId, fromVersion, fromSpeechLines, at: Date.now() };
   } else {
     session.lastPatientMove = null;
   }
@@ -104,6 +105,7 @@ export function rewindLastPatientMove(session, { maxAgeMs = 15_000 } = {}) {
   }
 
   session.nodeId = lastMove.fromNodeId;
+  rememberScenarioSpeech(session, lastMove.fromSpeechLines);
   session.version += 1;
   session.history.push({ nodeId: lastMove.fromNodeId, via: "revision_rewind", at: nowIso() });
   session.lastPatientMove = null;

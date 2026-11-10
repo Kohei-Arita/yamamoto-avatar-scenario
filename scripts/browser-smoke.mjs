@@ -10,7 +10,17 @@ import { registerKnownSessionId } from "../src/features/dialogue/session-registr
 import { loadScenarioFromFile } from "../src/features/scenario/scenario-loader.js";
 import { pullCompletedSpeechSegments } from "../src/features/dialogue/streaming-speech.js";
 
-const scenario = loadScenarioFromFile("./data/scenarios/haigan-2026.json");
+loadScenarioFromFile("./data/scenarios/haigan-2026.json");
+const sourceScript = await readFile("./data/scenarios/haigan-2026-script.md", "utf8");
+const scriptSections = sourceScript
+  .split(/^#{2,3} .+$/mu)
+  .map((section) =>
+    [...section.matchAll(/\*\*(AI山本医師|患者)\*\*：「(.*)」/gu)].map(([, role, text]) => ({
+      role,
+      text: text.trim()
+    }))
+  )
+  .filter((turns) => turns.length);
 
 env.operatorToken = "browser-smoke-test-token";
 env.scenarioIntentLlm = false;
@@ -341,27 +351,60 @@ try {
   await until(
     () =>
       operator.evaluate(
-        "document.querySelector('#stateNode').textContent.includes('s1_voting1_wait') && document.querySelectorAll('#branchButtons button').length === 4"
+        "document.querySelector('#stateNode').textContent.includes('s1_voting1_wait') && document.querySelectorAll('#branchButtons button').length === 3"
       ),
-    "four interview options"
+    "three interview options"
   );
   await until(() => stage.evaluate("window.__mic === false"), "interview voting mute");
-  await operator.evaluate("document.querySelectorAll('#branchButtons button')[3].click()");
+  async function finishDialogue(turns, speechStart, { trailing = [], terminal = false } = {}) {
+    const expected = [];
+    for (let index = 0; index < turns.length; index += 1) {
+      const turn = turns[index];
+      if (turn.role === "患者") {
+        await stage.evaluate(`window.__room.patient(${JSON.stringify(turn.text)})`);
+        continue;
+      }
+      const last = index === turns.length - 1;
+      for (const line of [turn.text, ...(last ? trailing : [])]) {
+        expected.push(
+          ...pullCompletedSpeechSegments(line).segments.map((segment) => segment.speechText)
+        );
+      }
+      await until(
+        async () => {
+          const actual = await stage.evaluate(
+            `({spoken: window.__spoken.slice(${speechStart}), mic: window.__mic})`
+          );
+          return (
+            JSON.stringify(actual.spoken) === JSON.stringify(expected) &&
+            actual.mic === !(last && terminal)
+          );
+        },
+        `dialogue turn ${index}: ${turn.text.slice(0, 20)}`,
+        30_000
+      );
+    }
+  }
+  const interviewStart = await stage.evaluate("window.__spoken.length");
+  await operator.evaluate("document.querySelectorAll('#branchButtons button')[2].click()");
+  await finishDialogue(scriptSections[3], interviewStart, {
+    trailing: [scriptSections[4][0].text]
+  });
   await until(
     () =>
-      stage.evaluate(
-        "window.__spoken.some(text => text.includes('のんでいるおくすり')) && window.__mic"
-      ),
-    "medication branch D"
-  );
-  await stage.evaluate("window.__room.patient('アムロジピンを飲んでいます。')");
-  await until(
-    () =>
-      stage.evaluate(
-        "window.__spoken.some(text => text.includes('ここからけんさけっか')) && window.__mic"
-      ),
+      operator.evaluate("document.querySelector('#stateNode').textContent.includes('s1_close')"),
     "await imaging cue"
   );
+  const beforeCue = await stage.evaluate("window.__spoken.length");
+  await stage.evaluate("window.__room.patient('画像はまだ準備中です。')");
+  await until(
+    () =>
+      operator.evaluate(
+        "document.querySelector('#logList').textContent.includes('画像はまだ準備中です。')"
+      ),
+    "ignore preparation announcement"
+  );
+  assert.equal(await stage.evaluate("window.__spoken.length"), beforeCue);
   assert.equal(
     await stage.evaluate("window.__spoken.some(text => text.includes('みぎかよう'))"),
     false
@@ -413,20 +456,11 @@ try {
   await delay(2100);
   const treatmentStart = await stage.evaluate("window.__spoken.length");
   await stage.evaluate("document.dispatchEvent(new KeyboardEvent('keydown', { key: '4' }))");
+  await finishDialogue(scriptSections[9], treatmentStart, { terminal: true });
   await until(
     () =>
-      stage.evaluate("window.__spoken.some(text => text.includes('おだいじになさってください'))"),
-    "fourth shortcut reads treatment through closing",
-    30_000
-  );
-  const expectedTreatment = ["v2_chemo", "s2_closing"].flatMap((nodeId) =>
-    pullCompletedSpeechSegments(
-      scenario.nodes.find((node) => node.id === nodeId).doctorLines.join("")
-    ).segments.map((segment) => segment.speechText)
-  );
-  assert.deepEqual(
-    await stage.evaluate(`window.__spoken.slice(${treatmentStart})`),
-    expectedTreatment
+      operator.evaluate("document.querySelector('#stateNode').textContent.includes('s2_closing')"),
+    "treatment closes after final patient turn"
   );
   assert.equal(await stage.evaluate("window.__mic"), false);
 
@@ -441,7 +475,7 @@ try {
   assert.equal(issued, 1, "二重起動ではLiveAvatarセッションを発行しない");
   assert.deepEqual(exceptions, []);
   console.log(
-    "Browser smoke passed: login, greeting, negation, operator pause/resume, four-way voting, PET cue, complete treatment playback, stage shortcuts, Web Lock. External services mocked."
+    "Browser smoke passed: login, greeting, negation, operator pause/resume, three interview choices, four treatment choices, silent moderator wait, PET cue, turn-by-turn treatment playback, stage shortcuts, Web Lock. External services mocked."
   );
 } catch (error) {
   for (const page of pages) {

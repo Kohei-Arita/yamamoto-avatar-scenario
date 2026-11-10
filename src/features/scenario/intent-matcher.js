@@ -10,6 +10,14 @@ function normalizeForMatching(text = "") {
     .trim();
 }
 
+// 合図や短い否定の返答は文全体で照合する。疑問符は残し、
+// 「提示しますか？」を「提示します」の合図として受理しない。
+function normalizeExactPhrase(text) {
+  return normalizeForMatching(text)
+    .replace(/[\s、,]/gu, "")
+    .replace(/[。.!！]+$/u, "");
+}
+
 const NEGATION = /ない|なく|ありません|ません|なし|無い|不要|違います/u;
 // 症状の否定ではなく「症状が続く」意味や二重否定は、ルールで反転させず分類器へ。
 const COMPLEX_NEGATION =
@@ -35,7 +43,7 @@ function hasAffirmedKeyword(text, keyword) {
 export function matchIntentByRules(text, intentAdvances = []) {
   const normalized = normalizeForMatching(text);
 
-  if (!normalized || COMPLEX_NEGATION.test(normalized)) {
+  if (!normalized) {
     return null;
   }
 
@@ -43,7 +51,11 @@ export function matchIntentByRules(text, intentAdvances = []) {
 
   for (const advance of intentAdvances) {
     const keywords = Array.isArray(advance.keywords) ? advance.keywords : [];
-    const matchedKeywords = keywords.filter((keyword) => hasAffirmedKeyword(normalized, keyword));
+    const matchedKeywords = keywords.filter((keyword) =>
+      advance.matchMode === "exact"
+        ? normalizeExactPhrase(normalized) === normalizeExactPhrase(keyword)
+        : !COMPLEX_NEGATION.test(normalized) && hasAffirmedKeyword(normalized, keyword)
+    );
 
     if (matchedKeywords.length === 0) {
       continue;
@@ -154,14 +166,18 @@ export async function classifyIntentWithLlm(text, intentAdvances, { doctorLine, 
   return parseIntentClassificationResponse(content, intentAdvances);
 }
 
-export async function matchIntent(text, intentAdvances, { doctorLine, signal } = {}) {
+export async function matchIntent(
+  text,
+  intentAdvances,
+  { doctorLine, signal, allowLlm = true } = {}
+) {
   const ruleMatch = matchIntentByRules(text, intentAdvances);
 
   if (ruleMatch) {
     return ruleMatch;
   }
 
-  if (!env.scenarioIntentLlm || !env.openAiApiKey) {
+  if (!allowLlm || !env.scenarioIntentLlm || !env.openAiApiKey) {
     return null;
   }
 

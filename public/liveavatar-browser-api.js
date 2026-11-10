@@ -234,7 +234,10 @@ export function subscribeDialogueEvents(
     const data = JSON.parse(event.data);
     onConnectionChange(true, data);
   });
-  source.addEventListener("scenario_state", (event) => onState(JSON.parse(event.data).state));
+  source.addEventListener("scenario_state", (event) => {
+    const { state, replace } = JSON.parse(event.data);
+    onState(state, { replace: Boolean(replace) });
+  });
   source.addEventListener("error", () => onConnectionChange(false));
 
   source.addEventListener("speech_segment", (event) => {

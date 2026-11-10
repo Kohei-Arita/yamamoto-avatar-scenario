@@ -118,6 +118,66 @@ function fixture(overrides = {}) {
 }
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
+test("起動準備中に無言ノードへジャンプしたら、古い開始台詞を再生しない", async () => {
+  const { manager, api, rooms, sources, state } = fixture();
+  const connect = api.connectLiveKitRoom;
+  let audioReady;
+  api.connectLiveKitRoom = (callbacks) =>
+    connect({
+      ...callbacks,
+      attachTrack: (...args) => {
+        audioReady = () => callbacks.attachTrack(...args);
+      }
+    });
+  const starting = manager.start();
+  await tick();
+  sources[0].callbacks.onState(
+    {
+      ...state,
+      version: state.version + 1,
+      speechId: "silent-start",
+      nodeId: "s1_voting1_wait",
+      acceptsPatientInput: false
+    },
+    { replace: true }
+  );
+  audioReady();
+  await starting;
+  assert.equal(
+    rooms[0].commands.some((command) => command.event_type === "avatar.speak_text"),
+    false
+  );
+  assert.equal(rooms[0].mic.includes(true), false);
+});
+
+for (const reconnect of [false, true]) {
+  test(`無言の投票待ちへの操作は古い発話を中断し、入力を閉じる（再接続: ${reconnect}）`, async () => {
+    const { manager, rooms, sources, state } = fixture();
+    await manager.start();
+    const waiting = {
+      ...state,
+      version: state.version + 1,
+      speechId: "silent-vote",
+      nodeId: "s1_voting1_wait",
+      acceptsPatientInput: false
+    };
+    if (reconnect) {
+      sources[0].callbacks.onConnectionChange(false);
+      sources[0].callbacks.onConnectionChange(true, { state: waiting, openingSegments: [] });
+    } else {
+      sources[0].callbacks.onState(waiting, { replace: true });
+    }
+    await tick();
+    assert.equal(rooms[0].commands.at(-1).event_type, "avatar.interrupt");
+    assert.equal(rooms[0].mic.includes(true), false);
+    const commandCount = rooms[0].commands.length;
+    sources[0].callbacks.onConnectionChange(false);
+    sources[0].callbacks.onConnectionChange(true, { state: waiting, openingSegments: [] });
+    await tick();
+    assert.equal(rooms[0].commands.length, commandCount, "受信済みの無言操作を再実行しない");
+  });
+}
+
 test("接続後は復帰先の台詞を読み、初期化中にはマイクを開かない", async () => {
   const { manager, rooms } = fixture();
   await manager.start();

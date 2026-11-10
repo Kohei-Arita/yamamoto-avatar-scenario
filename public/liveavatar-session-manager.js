@@ -285,9 +285,15 @@ export function createSessionManager({
         });
         run.events = api.subscribeDialogueEvents(run.sessionId, {
           epoch: bound.state.epoch,
-          onState: (state) => {
+          onState: (state, options = {}) => {
             if (!isCurrent()) return;
-            if (!run.conversation.applyScenarioState(state)) return;
+            if (!run.conversation.applyScenarioState(state, options)) return;
+            if (options.replace) {
+              run.speechBuffer.clear();
+              run.pendingSegments = [];
+              run.queuedSpeechId = state.speechId;
+              run.snapshot = { state, openingSegments: [] };
+            }
             run.state = state;
           },
           onConnectionChange: (connected, snapshot) => {
@@ -327,7 +333,9 @@ export function createSessionManager({
                   }))
                 );
               }
-              run.conversation.applyScenarioState(snapshot.state);
+              const silentReplacement = missingSpeech && snapshot.openingSegments.length === 0;
+              run.conversation.applyScenarioState(snapshot.state, { replace: silentReplacement });
+              if (silentReplacement) run.queuedSpeechId = snapshot.state.speechId;
               run.conversation.setTransportReady(true);
             }
           },

@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import env from "../../config/env.js";
 import {
   buildIntentClassificationMessages,
   matchIntentByRules,
+  matchIntent,
   parseIntentClassificationResponse
 } from "./intent-matcher.js";
 
@@ -26,6 +28,57 @@ test("「特にありません」は no_symptoms にルールマッチする", (
   assert.equal(match?.intent, "no_symptoms");
   assert.equal(match?.next, "s1_adl");
   assert.equal(match?.method, "rule");
+});
+
+test("完全一致のキーワードは否定や疑問文の一部だけでは一致しない", () => {
+  const advances = [
+    {
+      intent: "present_imaging",
+      matchMode: "exact",
+      keywords: ["PET画像を提示します"],
+      next: "imaging"
+    }
+  ];
+  assert.equal(
+    matchIntentByRules(" ＰＥＴ画像を提示します。", advances)?.intent,
+    "present_imaging"
+  );
+  for (const text of [
+    "画像はまだ準備中です",
+    "PET画像を提示しますか？",
+    "PET画像を提示しません",
+    "PET画像を提示しますという合図です"
+  ]) {
+    assert.equal(matchIntentByRules(text, advances), null, text);
+  }
+});
+
+test("合図のルール限定照合はLLMが有効でも外部分類を呼ばない", async (t) => {
+  const original = { enabled: env.scenarioIntentLlm, key: env.openAiApiKey };
+  env.scenarioIntentLlm = true;
+  env.openAiApiKey = "test-key";
+  const fetch = t.mock.method(globalThis, "fetch", () => {
+    throw new Error("LLM must not be called");
+  });
+  try {
+    const result = await matchIntent(
+      "画像はまだ準備中です",
+      [
+        {
+          intent: "present_imaging",
+          matchMode: "exact",
+          keywords: ["PET画像を提示します"],
+          next: "imaging"
+        }
+      ],
+      { allowLlm: false }
+    );
+    assert.equal(result, null);
+    assert.equal(fetch.mock.callCount(), 0);
+  } finally {
+    env.scenarioIntentLlm = original.enabled;
+    env.openAiApiKey = original.key;
+  }
 });
 
 test("「咳が出ます」は has_symptoms にルールマッチする", () => {
