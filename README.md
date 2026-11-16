@@ -9,16 +9,16 @@
 
 ## ドキュメントの地図
 
-| 知りたいこと                           | 読む場所                                                                                                                                    |
-| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| 全体の流れ・本番当日の操作             | このREADME（[全体の流れ](#全体の流れ) / [本番オペレーション](#本番オペレーション)）                                                         |
-| Windowsでの準備・起動・更新とエラー対処 | [docs/windows-setup.md](docs/windows-setup.md) |
-| X-Gateへの接続手順                     | [X-GATE_connection.md](X-GATE_connection.md)                                                                                                |
-| 台本とノードの対応・台本の差し替え     | [docs/scenario-map.md](docs/scenario-map.md)                                                                                                |
-| 雑音・回り込み・誤進行への対策         | このREADME（[会場の音声入力](#会場の音声入力) / [本番向けの保護機構](#本番向けの保護機構)）、詳細は [architecture.md](docs/architecture.md) |
-| 仕組み・API・状態同期                  | [docs/architecture.md](docs/architecture.md)                                                                                                |
-| リハーサルで確認する項目               | [docs/rehearsal.md](docs/rehearsal.md)                                                                                                      |
-| 本番向け改修の経緯・検証記録・障害調査 | [docs/production-hardening.md](docs/production-hardening.md)                                                                                |
+| 知りたいこと                             | 読む場所                                                                                                                                    |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| 全体の流れ・本番当日の操作               | このREADME（[全体の流れ](#全体の流れ) / [本番オペレーション](#本番オペレーション)）                                                         |
+| 開発用Macから本番用Windowsへの移行・運用 | [docs/windows-setup.md](docs/windows-setup.md)                                                                                              |
+| X-Gateへの接続手順                       | [X-GATE_connection.md](X-GATE_connection.md)                                                                                                |
+| 台本とノードの対応・台本の差し替え       | [docs/scenario-map.md](docs/scenario-map.md)                                                                                                |
+| 雑音・回り込み・誤進行への対策           | このREADME（[会場の音声入力](#会場の音声入力) / [本番向けの保護機構](#本番向けの保護機構)）、詳細は [architecture.md](docs/architecture.md) |
+| 仕組み・API・状態同期                    | [docs/architecture.md](docs/architecture.md)                                                                                                |
+| リハーサルで確認する項目                 | [docs/rehearsal.md](docs/rehearsal.md)                                                                                                      |
+| 本番向け改修の経緯・検証記録・障害調査   | [docs/production-hardening.md](docs/production-hardening.md)                                                                                |
 
 ## 会話の基本方針
 
@@ -72,9 +72,11 @@ flowchart TD
 
 ## セットアップ
 
-Node.js 22.13以降を使用します。DockerもNode.js 22系です。
+Node.js 22.13以降を使用します。開発はMac、本番はWindows 1台で動かす構成です。
 
-Windows PowerShellでの初期設定、起動、マイク・X-Gate出力、更新は [Windowsセットアップガイド](docs/windows-setup.md) を参照してください。各段階の正常な状態と、エラーが出た場合の対処を記載しています。
+本番用Windowsへのコード・設定の移行、`npm start` での起動、マイク・X-Gate出力、更新は [Windows移行・運用ガイド](docs/windows-setup.md) を参照してください。各段階の正常な状態と、エラーが出た場合の対処を記載しています。
+
+以下は開発用Macでの初回セットアップです。既に `.env` がある場合はコピーを省略してください。
 
 ```bash
 npm install
@@ -241,9 +243,9 @@ npm run format
 
 ## デプロイ
 
-Render（Docker・単一インスタンス）を想定。`render.yaml` を参照し、`OPERATOR_TOKEN` / `LIVEAVATAR_API_KEY` / `OPENAI_API_KEY` はダッシュボードで設定してください。X-Gateとの接続手順は [X-GATE_connection.md](X-GATE_connection.md)。
+本番用WindowsへGitHub経由で動作確認済みのコードを取得し、接続設定を `.env` に引き継ぎます。`NODE_ENV=production`・`SCENARIO_SPEECH_MODE=fixed` を設定し、`npm start` でサーバーを1つ起動します。
 
-HTTP公開時はHTTPSを使用してください。対話・ログ・LiveAvatar APIには認証Cookieまたは`Authorization: Bearer <OPERATOR_TOKEN>`が必要です。クロスオリジンアクセスは許可しません。更新後は会場画面・操作画面を再読み込みして、新しいSSE形式と認証を使う組み合わせに揃えてください。Dockerは`npm ci --omit=dev`で依存を固定し、非rootユーザーで起動します。
+会場画面と操作画面は同じWindowsのChromeで開き、X-GateへHDMI出力します。開発用Macは本番中に起動しておく必要はありません。詳しい手順とエラー対処は [Windows移行・運用ガイド](docs/windows-setup.md)、実機確認の項目は [リハーサル手順](docs/rehearsal.md) を参照してください。
 
 ## アーキテクチャ・経緯
 

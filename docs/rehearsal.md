@@ -1,6 +1,6 @@
 # リハーサル手動チェックリスト
 
-学会本番前に、実機（X-Gate + LiveAvatar）で以下を通しで確認する。
+学会本番前に、本番用Windowsと実際のマイク・スピーカー・X-Gate・LiveAvatarを使って以下を通しで確認する。初回の移行・起動は [Windows移行・運用ガイド](windows-setup.md) を参照。
 
 ```mermaid
 flowchart LR
@@ -11,9 +11,10 @@ flowchart LR
 
 - [ ] Node.js 22.13以降で、`.env` の `OPERATOR_TOKEN` に十分に長いランダム値が設定されている（未設定では起動しない）
 - [ ] `SCENARIO_SPEECH_MODE=fixed` になっている（本番は必ずfixed）
-- [ ] 単一インスタンスで起動している（Render: numInstances=1）
+- [ ] 開発用Macで動作確認した配布版と、本番用WindowsのコミットIDが一致している
+- [ ] 本番用Windowsの `.env` は `NODE_ENV=production`。`npm start`（PowerShellで必要なら `npm.cmd start`）でサーバーを1つ起動している
 - [ ] LiveAvatarの最大セッション時間が、接続開始からVoting待ちを含む本番全体の時間に余裕を加えた長さをカバーしている（[5分で切れた際の調査記録](production-hardening.md#追記-5分で映像音声が切れる原因)）。keep-aliveで上限は延長できない
-- [ ] 手元端末で `/operator` を開き、トークンで接続できる
+- [ ] 本番用Windowsの手元画面で `http://localhost:3000/operator` を開き、トークンで接続できる（ポートを変更した場合はURLも合わせる）
 - [ ] 会場画面で `/access` の認証を済ませ、`/xgate?autostart=1&controls=0`（必要なら `&shortcuts=1`）が開ける。URLにトークンが残らない
 - [ ] 患者役の専用マイクを入力にし、会場全体を拾う内蔵マイクや、アバター音声を含むミキサーの出力を入力にしない
 - [ ] ミキサー入力なら `LIVEAVATAR_MICROPHONE_AUTO_GAIN_CONTROL=false` を基準に音響担当者とゲインを調整し、小声の「はい」が通ることを確認する
