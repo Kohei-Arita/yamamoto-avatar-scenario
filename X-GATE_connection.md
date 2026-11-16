@@ -2,6 +2,8 @@
 
 Macでアプリをローカル起動し、X-Gateへ表示して本番運用する手順です。
 
+別のWindows PCでの起動、WindowsからのHDMI出力、MacとWindowsで表示・操作を分ける場合は [Mac・Windowsセットアップガイド](docs/mac-windows-setup.md) を参照してください。
+
 ## まず前提
 
 あなたのアプリは今、Node / Express で `localhost:3000` に立ち上がり、X-Gate 向けの出力ページ `/xgate`、進行担当者用の `/operator`、開発者用のデバッグ画面 `/index.html` をブラウザで開いて使う構成です（`/` は `/xgate` にリダイレクトされます）。

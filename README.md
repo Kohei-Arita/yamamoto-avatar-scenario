@@ -12,6 +12,7 @@
 | 知りたいこと                           | 読む場所                                                                                                                                    |
 | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | 全体の流れ・本番当日の操作             | このREADME（[全体の流れ](#全体の流れ) / [本番オペレーション](#本番オペレーション)）                                                         |
+| Mac・別のWindows PCでの起動と更新      | [docs/mac-windows-setup.md](docs/mac-windows-setup.md)                                                                                      |
 | X-Gateへの接続手順                     | [X-GATE_connection.md](X-GATE_connection.md)                                                                                                |
 | 台本とノードの対応・台本の差し替え     | [docs/scenario-map.md](docs/scenario-map.md)                                                                                                |
 | 雑音・回り込み・誤進行への対策         | このREADME（[会場の音声入力](#会場の音声入力) / [本番向けの保護機構](#本番向けの保護機構)）、詳細は [architecture.md](docs/architecture.md) |
@@ -72,6 +73,8 @@ flowchart TD
 ## セットアップ
 
 Node.js 22.13以降を使用します。DockerもNode.js 22系です。
+
+Windows PowerShellでの初期設定、Macとのコード更新、2台で表示・操作を分ける手順は [Mac・Windowsセットアップガイド](docs/mac-windows-setup.md) を参照してください。
 
 ```bash
 npm install
