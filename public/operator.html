@@ -45,6 +45,15 @@
         </div>
 
         <div class="operator-panel">
+          <div id="imagingControls" hidden>
+            <h2>画像説明</h2>
+            <div class="operator-actions">
+              <button id="startImagingBtn" disabled>画像説明を開始</button>
+            </div>
+            <p class="operator-muted">
+              司会の説明が終わったら押してください。画像・病理の説明を開始します。
+            </p>
+          </div>
           <h2>Voting分岐</h2>
           <div id="branchButtons" class="operator-branches">
             <p class="operator-muted">分岐待機中のノードではありません</p>
@@ -57,7 +66,7 @@
             <button id="resetBtn" class="danger">リセット</button>
           </div>
           <p class="operator-muted">
-            司会進行・拍手の間は音声入力を停止し、患者の返答前に再開してください。Voting待機中は自動で停止します。
+            司会進行・拍手の間は音声入力を停止し、患者の返答前に再開してください。画像説明の開始待ち・Voting待機中は自動で停止します。
           </p>
           <div class="operator-jump">
             <select id="jumpSelect"></select>

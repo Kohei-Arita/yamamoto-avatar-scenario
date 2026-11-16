@@ -8,6 +8,8 @@ const statePatient = document.getElementById("statePatient");
 const stateIntent = document.getElementById("stateIntent");
 const stateLines = document.getElementById("stateLines");
 const branchButtons = document.getElementById("branchButtons");
+const imagingControls = document.getElementById("imagingControls");
+const startImagingBtn = document.getElementById("startImagingBtn");
 const nextBtn = document.getElementById("nextBtn");
 const sayBtn = document.getElementById("sayBtn");
 const resetBtn = document.getElementById("resetBtn");
@@ -21,6 +23,7 @@ const stateConnection = document.getElementById("stateConnection");
 
 const POLL_INTERVAL_MS = 1500;
 const BRANCH_LABELS = { A: "A", B: "B", C: "C", D: "D" };
+const IMAGING_BRANCH = "present_imaging";
 
 let token = sessionStorage.getItem("operatorToken") || "";
 let pollTimer = null;
@@ -36,6 +39,7 @@ function updateActionButtons() {
       button.disabled = actionBusy || !currentState;
       if (currentState?.recoveryRequired && button !== jumpBtn && button !== resetBtn)
         button.disabled = true;
+      if (button === startImagingBtn && imagingControls.hidden) button.disabled = true;
     });
 }
 updateActionButtons();
@@ -80,8 +84,11 @@ function describeBranch(branch) {
 
 function renderBranches(state) {
   branchButtons.innerHTML = "";
+  const branches = state.awaitingBranches || [];
+  imagingControls.hidden = !branches.some((entry) => entry.branch === IMAGING_BRANCH);
+  const votingBranches = branches.filter((entry) => entry.branch !== IMAGING_BRANCH);
 
-  if (!state.awaitingBranches || state.awaitingBranches.length === 0) {
+  if (votingBranches.length === 0) {
     const empty = document.createElement("p");
     empty.className = "operator-muted";
     empty.textContent = state.isTerminal
@@ -91,7 +98,7 @@ function renderBranches(state) {
     return;
   }
 
-  for (const entry of state.awaitingBranches) {
+  for (const entry of votingBranches) {
     const button = document.createElement("button");
     button.textContent = `${describeBranch(entry.branch)} → ${entry.next}`;
     button.addEventListener("click", () => runAction("branch", { branch: entry.branch }));
@@ -169,7 +176,9 @@ function renderState(data) {
       ? "停止中（操作係の再開待ち）"
       : state.acceptsPatientInput
         ? "患者の返答を受付（アバター発話中はミュート）"
-        : "自動停止中（Voting待機・終了）";
+        : state.awaitingBranches?.some((entry) => entry.branch === IMAGING_BRANCH)
+          ? "自動停止中（画像説明の開始待ち）"
+          : "自動停止中（Voting待機・終了）";
   inputBtn.textContent = state.inputPaused ? "音声入力を再開" : "音声入力を停止";
   const logs = data.logs || [];
 
@@ -277,6 +286,7 @@ connectBtn.addEventListener("click", () => {
 });
 
 nextBtn.addEventListener("click", () => runAction("next"));
+startImagingBtn.addEventListener("click", () => runAction("branch", { branch: IMAGING_BRANCH }));
 sayBtn.addEventListener("click", () => runAction("say"));
 resetBtn.addEventListener("click", () => {
   if (window.confirm("シナリオを先頭に戻します。よろしいですか？")) {

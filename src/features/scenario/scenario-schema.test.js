@@ -45,18 +45,16 @@ test("正常なシナリオJSONを受理する", () => {
   assert.equal(valid, true, errors.join(", "));
 });
 
-test("無言の投票待ち・終端と完全一致の合図待ちを受理する", () => {
+test("無言の操作待ち・終端と完全一致の患者返答を受理し、不正な照合方法を拒否する", () => {
   const scenario = buildValidScenario();
   scenario.nodes[2].doctorLines = [];
   scenario.nodes[3].doctorLines = [];
-  scenario.nodes[1].ignoreUnmatchedInput = true;
   scenario.nodes[1].advance.forEach((entry) => {
     entry.matchMode = "exact";
   });
   assert.deepEqual(validateScenario(scenario), { valid: true, errors: [] });
   scenario.nodes[1].advance[0].matchMode = "keyword";
-  assert.equal(validateScenario(scenario).valid, false);
-  delete scenario.nodes[1].ignoreUnmatchedInput;
+  assert.equal(validateScenario(scenario).valid, true);
   scenario.nodes[1].advance[0].matchMode = "unknown";
   assert.equal(validateScenario(scenario).valid, false);
 });

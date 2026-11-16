@@ -72,10 +72,11 @@ test("新台本の問診3分岐 × 治療4分岐の全12経路を、患者の返
       assert.equal(interviewStart.nodeId, interview.nodeId);
       await runScript(engine, id, interview.turns, interviewStart, [scriptSections[4][0].text]);
       assert.equal(engine.getInputState(id).nodeId, "s1_close");
+      assert.equal(engine.getInputState(id).acceptsPatientInput, false);
       const ignored = await engine.handlePatientUtterance(id, "司会から検査結果を説明します。");
       assert.equal(ignored.kind, "ignored");
       assert.deepEqual(ignored.lines, []);
-      const imaging = await engine.handlePatientUtterance(id, "PET画像を提示します。");
+      const imaging = engine.applyOperatorBranch(id, "present_imaging");
       await runScript(engine, id, scriptSections[5], imaging);
       assert.equal(engine.getInputState(id).nodeId, "s2_voting2_wait");
       assert.equal(engine.getInputState(id).acceptsPatientInput, false);
@@ -119,19 +120,33 @@ test("症状を含む否定文を『症状なし』として進めず、曖昧�
   }
 });
 
-test("司会待機は提示の明確な合図だけで再開し、説明・疑問・否定には無言で待つ", async () => {
+test("画像説明の開始待ちでは旧音声合図を含めて無言で待ち、LLM分類も呼ばない", async (t) => {
+  const original = { enabled: env.scenarioIntentLlm, key: env.openAiApiKey };
+  env.scenarioIntentLlm = true;
+  env.openAiApiKey = "test-key";
+  t.after(() => {
+    env.scenarioIntentLlm = original.enabled;
+    env.openAiApiKey = original.key;
+  });
+  const fetch = t.mock.method(globalThis, "fetch", () => {
+    throw new Error("LLM must not be called");
+  });
   const engine = createScenarioEngine({ scenario });
   const id = newSessionId();
   engine.jumpTo(id, "s1_close");
   const before = engine.getInputState(id);
+  assert.equal(before.acceptsPatientInput, false);
   for (const text of [
+    "PET画像を提示します。",
+    "それでは、PET/CTの画像を提示します。",
+    "ペット画像を提示します",
     "画像はまだ準備中です",
     "検査って何ですか",
     "PET画像を提示しますか？",
     "PET画像を提示しません",
     "まだ画像を提示しないでください",
     "少し待ってください",
-    "『PET画像を提示します』という合図で再開します",
+    "もう一度お願いします",
     "はい"
   ]) {
     const result = await engine.handlePatientUtterance(id, text);
@@ -139,16 +154,40 @@ test("司会待機は提示の明確な合図だけで再開し、説明・疑�
     assert.deepEqual(result.lines, []);
     assert.deepEqual(result.state, before);
   }
-  for (const text of [
-    "PET画像を提示します。",
-    "それでは、PET/CTの画像を提示します。",
-    "ペット画像を提示します"
-  ]) {
-    engine.jumpTo(id, "s1_close");
-    const result = await engine.handlePatientUtterance(id, text);
-    assert.equal(result.nodeId, "s2_pathology");
-    assert.equal(result.intentMethod, "rule");
-  }
+  assert.equal(fetch.mock.callCount(), 0);
+});
+
+test("画像説明の開始操作は待機中だけ有効で、画像・病理を一度だけ読み患者の返答を待つ", () => {
+  const engine = createScenarioEngine({ scenario });
+  const id = newSessionId();
+  assert.throws(() => engine.applyOperatorBranch(id, "present_imaging"));
+  engine.jumpTo(id, "s1_voting1_wait");
+  assert.throws(() => engine.applyOperatorBranch(id, "present_imaging"));
+  engine.jumpTo(id, "s1_close");
+  assert.deepEqual(engine.getSessionState(id).awaitingBranches, [
+    { branch: "present_imaging", next: "s2_imaging" }
+  ]);
+  const result = engine.applyOperatorBranch(id, "present_imaging");
+  assert.equal(result.nodeId, "s2_pathology");
+  assert.deepEqual(
+    result.lines,
+    scriptSections[5].slice(0, 2).map((turn) => turn.text)
+  );
+  const after = engine.getInputState(id);
+  assert.equal(after.acceptsPatientInput, true);
+  assert.throws(() => engine.applyOperatorBranch(id, "present_imaging"));
+  assert.deepEqual(engine.getInputState(id), after);
+});
+
+test("画像説明を開始しても手動の音声入力停止は維持し、再開後に患者の返答を受け付ける", () => {
+  const engine = createScenarioEngine({ scenario });
+  const id = newSessionId();
+  engine.jumpTo(id, "s1_close");
+  engine.setInputPaused(id, true);
+  assert.equal(engine.applyOperatorBranch(id, "present_imaging").nodeId, "s2_pathology");
+  assert.equal(engine.getInputState(id).acceptsPatientInput, false);
+  assert.equal(engine.getInputState(id).inputPaused, true);
+  assert.equal(engine.setInputPaused(id, false).acceptsPatientInput, true);
 });
 
 test("聞き直しへのrevisionは、ノードとその時点の台詞を一緒に復元する", async () => {
@@ -169,18 +208,21 @@ test("聞き直しへのrevisionは、ノードとその時点の台詞を一緒
   }
 });
 
-test("無言で待った司会の断片も、結合再送で同じ位置から合図を判定する", async () => {
+test("画像説明の開始待ちへ入った後は、遅着した断片の結合再送でも問診へ巻き戻さない", async () => {
   const engine = createScenarioEngine({ scenario });
   const id = newSessionId();
-  engine.jumpTo(id, "s1_close");
+  engine.jumpTo(id, "v1_daily_life");
+  await engine.handlePatientUtterance(id, "家事を続けたいです");
   const before = engine.getInputState(id);
+  assert.equal(before.nodeId, "s1_close");
   assert.equal((await engine.handlePatientUtterance(id, "PET画像")).kind, "ignored");
   const result = await engine.handlePatientUtterance(id, "PET画像を提示します。", {
     revision: true,
     expectedVersion: before.version
   });
-  assert.equal(result.nodeId, "s2_pathology");
-  assert.equal(result.intent, "present_imaging");
+  assert.equal(result.kind, "ignored");
+  assert.deepEqual(result.lines, []);
+  assert.deepEqual(result.state, before);
 });
 
 test("全ノードに到達でき、自動遷移は循環せず、問診の4番目の選択肢を受け付けない", () => {
@@ -269,7 +311,7 @@ test("サーバー復旧待ちはジャンプかリセットでのみ解除し�
   assert.equal(stale.kind, "superseded");
 });
 
-test("operator遷移待ちノードで患者が発話するとhold応答を返し、状態は動かない", async () => {
+test("Voting待機中は遅れて患者発話が届いても無言で待ち、状態は動かない", async () => {
   const engine = createScenarioEngine({ scenario });
   const sessionId = newSessionId();
 
@@ -277,8 +319,11 @@ test("operator遷移待ちノードで患者が発話するとhold応答を返�
   await engine.handlePatientUtterance(sessionId, "特にありません");
   await engine.handlePatientUtterance(sessionId, "少しあります");
 
+  const before = engine.getInputState(sessionId);
   const result = await engine.handlePatientUtterance(sessionId, "どうすればいいですか");
-  assert.equal(result.kind, "hold");
+  assert.equal(result.kind, "ignored");
+  assert.deepEqual(result.lines, []);
+  assert.deepEqual(result.state, before);
   assert.equal(engine.getSessionState(sessionId).nodeId, "s1_voting1_wait");
 });
 

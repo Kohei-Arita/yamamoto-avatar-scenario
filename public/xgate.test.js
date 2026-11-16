@@ -152,6 +152,19 @@ test("会場キーの長押し・文字入力中のキー操作では分岐や�
   ]);
 });
 
+test("画像説明の開始待ちではVotingの数字キーで進めない", async () => {
+  const stage = shortcutFixture();
+  stage.setState({
+    epoch: "venue-server",
+    version: 8,
+    awaitingBranches: [{ branch: "present_imaging", next: "s2_imaging" }]
+  });
+  await stage.poll();
+  for (const key of ["1", "2", "3", "4"]) stage.press(key);
+  await flush();
+  assert.deepEqual(stage.requests, []);
+});
+
 test("会場キーを連打しても操作は一度だけ送り、次の投票では最新の分岐と進行番号を使う", async () => {
   const stage = shortcutFixture();
   await stage.poll();

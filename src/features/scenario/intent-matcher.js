@@ -10,8 +10,8 @@ function normalizeForMatching(text = "") {
     .trim();
 }
 
-// 合図や短い否定の返答は文全体で照合する。疑問符は残し、
-// 「提示しますか？」を「提示します」の合図として受理しない。
+// 症状なしの定型返答は文全体で照合し、「眠れない」の部分一致を避ける。
+// 疑問符は残し、疑問文を断定の返答として受理しない。
 function normalizeExactPhrase(text) {
   return normalizeForMatching(text)
     .replace(/[\s、,]/gu, "")
@@ -166,18 +166,14 @@ export async function classifyIntentWithLlm(text, intentAdvances, { doctorLine, 
   return parseIntentClassificationResponse(content, intentAdvances);
 }
 
-export async function matchIntent(
-  text,
-  intentAdvances,
-  { doctorLine, signal, allowLlm = true } = {}
-) {
+export async function matchIntent(text, intentAdvances, { doctorLine, signal } = {}) {
   const ruleMatch = matchIntentByRules(text, intentAdvances);
 
   if (ruleMatch) {
     return ruleMatch;
   }
 
-  if (!allowLlm || !env.scenarioIntentLlm || !env.openAiApiKey) {
+  if (!env.scenarioIntentLlm || !env.openAiApiKey) {
     return null;
   }
 

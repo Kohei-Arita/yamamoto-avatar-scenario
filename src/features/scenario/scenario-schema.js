@@ -76,18 +76,6 @@ function validateNode(node, index, errors) {
   if (node.doctorLines?.length === 0 && node.advance.some((entry) => entry?.type !== "operator")) {
     errors.push(`${label}.doctorLines を空にできるのは operator 待機または終端だけです`);
   }
-  if (node.ignoreUnmatchedInput !== undefined) {
-    if (
-      typeof node.ignoreUnmatchedInput !== "boolean" ||
-      (node.ignoreUnmatchedInput &&
-        (node.advance.length === 0 ||
-          node.advance.some(
-            (entry) => entry?.type !== "patient_intent" || entry.matchMode !== "exact"
-          )))
-    ) {
-      errors.push(`${label}.ignoreUnmatchedInput は完全一致の合図待ちノードだけで使用できます`);
-    }
-  }
 }
 
 export function validateScenario(scenario) {

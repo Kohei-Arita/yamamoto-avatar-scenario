@@ -6,7 +6,6 @@ const DEFAULT_REPLIES = {
   off_topic: "そうなんですね。ありがとうございます。",
   unclear: "すみません、もう一度お聞かせいただけますか。",
   pause: "急がなくて大丈夫です。ご準備ができたらお聞かせください。",
-  hold: "ただいま会場の皆さまにお伺いしていますので、少しだけお待ちください。",
   closed: "本日の診察はここまでです。ありがとうございました。"
 };
 
@@ -65,8 +64,8 @@ export function buildDeviationLines(category, node, scenario) {
   const reply = resolveReply(category, node, scenario);
   const lines = [reply];
 
-  // 聞き取り不能・進行待ち・終了時は再提示せず、それ以外は現在ノードの質問へ戻す
-  if (!["unclear", "hold", "closed", "pause"].includes(category)) {
+  // 聞き取り不能・終了・保留時は再提示せず、それ以外は現在ノードの質問へ戻す
+  if (!["unclear", "closed", "pause"].includes(category)) {
     const lastLine = (node?.doctorLines || []).at(-1);
 
     if (lastLine && lastLine !== reply) {

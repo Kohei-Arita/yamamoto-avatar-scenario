@@ -7,7 +7,7 @@ import {
   rewindLastPatientMove,
   rememberScenarioSpeech
 } from "./scenario.store.js";
-import { matchIntent, matchIntentByRules } from "./intent-matcher.js";
+import { matchIntent } from "./intent-matcher.js";
 import {
   buildDeviationLines,
   classifyDeviation,
@@ -126,6 +126,12 @@ export function createScenarioEngine({ scenario = null } = {}) {
     }
     if (session.inputPaused) return noSpeech("ignored");
 
+    // 操作待ちでは遅れて届いた音声・言い直しも無視し、司会や投票に割り込まない。
+    const advances = getNode(currentScenario, session.nodeId)?.advance || [];
+    if (advances.length > 0 && advances.every((entry) => entry.type === "operator")) {
+      return noSpeech("ignored");
+    }
+
     // ASRが出す句読点だけ・一音だけの断片では進行させない(発話もしない)。
     // patient_anyノードをこれで通すと台本が勝手に進んでしまう。
     if (!isSubstantiveUtterance(text)) {
@@ -182,12 +188,6 @@ export function createScenarioEngine({ scenario = null } = {}) {
         at: Date.now()
       };
     }
-    // 司会の説明中は明確な合図だけで再開する。雑談・質問・待機依頼にも割り込まない。
-    if (node.ignoreUnmatchedInput && !matchIntentByRules(text, intentEntries)) {
-      // 「PET画像」→「を提示します」の結合再送も、この待機位置から再判定する。
-      rememberPatientTurn();
-      return noSpeech("ignored");
-    }
     const control = classifyUtteranceControl(text);
 
     function deviationResult(category) {
@@ -235,7 +235,6 @@ export function createScenarioEngine({ scenario = null } = {}) {
       const version = session.version;
       const match = await matchIntent(text, intentEntries, {
         doctorLine: node.doctorLines.at(-1) || "",
-        allowLlm: !node.ignoreUnmatchedInput,
         signal
       });
 
@@ -283,16 +282,7 @@ export function createScenarioEngine({ scenario = null } = {}) {
       return deviationResult(mentionsCandidate ? "unclear" : category);
     }
 
-    // operator遷移待ちノードで患者が発話した場合は待機応答
-    return {
-      kind: "hold",
-      deviation: "hold",
-      nodeId: node.id,
-      scene: node.scene,
-      intent: null,
-      state: getInputState(sessionId),
-      lines: buildDeviationLines("hold", node, currentScenario)
-    };
+    return noSpeech("ignored");
   }
 
   function applyOperatorBranch(sessionId, branch) {

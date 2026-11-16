@@ -333,6 +333,7 @@ try {
     () => operator.evaluate("document.querySelector('#stateNode').textContent.includes('s1_adl')"),
     "operator state"
   );
+  assert.equal(await operator.evaluate("document.querySelector('#imagingControls').hidden"), true);
   await operator.evaluate("document.querySelector('#inputBtn').click()");
   await until(() => stage.evaluate("window.__mic === false"), "operator pause");
   await operator.evaluate("document.querySelector('#inputBtn').click()");
@@ -356,7 +357,7 @@ try {
     "three interview options"
   );
   await until(() => stage.evaluate("window.__mic === false"), "interview voting mute");
-  async function finishDialogue(turns, speechStart, { trailing = [], terminal = false } = {}) {
+  async function finishDialogue(turns, speechStart, { trailing = [], muteAtEnd = false } = {}) {
     const expected = [];
     for (let index = 0; index < turns.length; index += 1) {
       const turn = turns[index];
@@ -377,7 +378,7 @@ try {
           );
           return (
             JSON.stringify(actual.spoken) === JSON.stringify(expected) &&
-            actual.mic === !(last && terminal)
+            actual.mic === !(last && muteAtEnd)
           );
         },
         `dialogue turn ${index}: ${turn.text.slice(0, 20)}`,
@@ -388,38 +389,56 @@ try {
   const interviewStart = await stage.evaluate("window.__spoken.length");
   await operator.evaluate("document.querySelectorAll('#branchButtons button')[2].click()");
   await finishDialogue(scriptSections[3], interviewStart, {
-    trailing: [scriptSections[4][0].text]
+    trailing: [scriptSections[4][0].text],
+    muteAtEnd: true
   });
   await until(
     () =>
-      operator.evaluate("document.querySelector('#stateNode').textContent.includes('s1_close')"),
-    "await imaging cue"
+      operator.evaluate(
+        "document.querySelector('#stateNode').textContent.includes('s1_close') && !document.querySelector('#imagingControls').hidden && !document.querySelector('#startImagingBtn').disabled"
+      ),
+    "await imaging button"
   );
   const beforeCue = await stage.evaluate("window.__spoken.length");
-  await stage.evaluate("window.__room.patient('画像はまだ準備中です。')");
-  await until(
-    () =>
-      operator.evaluate(
-        "document.querySelector('#logList').textContent.includes('画像はまだ準備中です。')"
-      ),
-    "ignore preparation announcement"
+  assert.equal(await stage.evaluate("window.__mic"), false);
+  assert.equal(
+    await operator.evaluate("document.querySelectorAll('#branchButtons button').length"),
+    0
   );
+  await stage.evaluate(
+    "window.__room.patient('画像はまだ準備中です。'); window.__room.patient('PET画像を提示します。')"
+  );
+  // 旧音声合図を受けても、通常の発話確定時間を過ぎて無言・マイク停止を保つ。
+  await delay(2500);
   assert.equal(await stage.evaluate("window.__spoken.length"), beforeCue);
+  assert.equal(await stage.evaluate("window.__mic"), false);
   assert.equal(
     await stage.evaluate("window.__spoken.some(text => text.includes('みぎかよう'))"),
     false
   );
-  await stage.evaluate("window.__room.patient('PET画像を提示します。')");
+  await operator.evaluate(
+    "document.querySelector('#startImagingBtn').click(); document.querySelector('#startImagingBtn').click()"
+  );
   await until(
     () =>
       stage.evaluate(
         "window.__spoken.some(text => text.includes('リンパせつてんい')) && window.__mic"
       ),
-    "PET cue starts imaging and pathology"
+    "imaging button starts imaging and pathology"
   );
   assert.equal(
     await stage.evaluate("window.__spoken.some(text => text.includes('みぎかよう'))"),
     true
+  );
+  const imagingSpeech = scriptSections[5]
+    .slice(0, 2)
+    .flatMap((turn) =>
+      pullCompletedSpeechSegments(turn.text).segments.map((segment) => segment.speechText)
+    );
+  assert.deepEqual(await stage.evaluate(`window.__spoken.slice(${beforeCue})`), imagingSpeech);
+  await until(
+    () => operator.evaluate("document.querySelector('#imagingControls').hidden"),
+    "imaging button hidden after start"
   );
   await stage.evaluate(
     "window.__room.patient('やはり肺がんなのですね。手術で取れば治るのでしょうか。')"
@@ -456,7 +475,7 @@ try {
   await delay(2100);
   const treatmentStart = await stage.evaluate("window.__spoken.length");
   await stage.evaluate("document.dispatchEvent(new KeyboardEvent('keydown', { key: '4' }))");
-  await finishDialogue(scriptSections[9], treatmentStart, { terminal: true });
+  await finishDialogue(scriptSections[9], treatmentStart, { muteAtEnd: true });
   await until(
     () =>
       operator.evaluate("document.querySelector('#stateNode').textContent.includes('s2_closing')"),
@@ -475,7 +494,7 @@ try {
   assert.equal(issued, 1, "二重起動ではLiveAvatarセッションを発行しない");
   assert.deepEqual(exceptions, []);
   console.log(
-    "Browser smoke passed: login, greeting, negation, operator pause/resume, three interview choices, four treatment choices, silent moderator wait, PET cue, turn-by-turn treatment playback, stage shortcuts, Web Lock. External services mocked."
+    "Browser smoke passed: login, greeting, negation, operator pause/resume, three interview choices, four treatment choices, muted moderator wait, ignored PET cue, imaging button and double-click guard, turn-by-turn treatment playback, stage shortcuts, Web Lock. External services mocked."
   );
 } catch (error) {
   for (const page of pages) {

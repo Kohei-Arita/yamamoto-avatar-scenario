@@ -260,11 +260,7 @@ let operatorState = null;
 function resolveOperatorBranch(slot) {
   const branches = operatorState?.awaitingBranches || [];
   const suffix = OPERATOR_BRANCH_KEYS[slot];
-  return (
-    branches.find((entry) => entry.branch.endsWith(`_${suffix}`))?.branch ||
-    branches[slot - 1]?.branch ||
-    null
-  );
+  return branches.find((entry) => entry.branch.endsWith(`_${suffix}`))?.branch || null;
 }
 
 async function refreshOperatorState() {
