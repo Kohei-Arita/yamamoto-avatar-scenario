@@ -1,0 +1,578 @@
+# Windowsでのセットアップ・起動・エラー対処
+
+Windows PCにこのアプリを入れ、そのPCのChromeでアバター表示と進行操作を行う手順です。Windows 11のPowerShellを前提に、初回準備から更新まで、各段階の確認方法とエラー時の対処をまとめています。
+
+**起動コマンドはWindowsでも `npm run dev` です。** PowerShellで `npm.ps1` の実行が禁止されている場合は `npm.cmd run dev` を使います。`.env` を初めて作るコマンドは `Copy-Item .env.example .env` です。既存の `.env` にはコピーし直さず、内容を編集してください。
+
+## 進め方と目次
+
+コマンドはPowerShellに1行ずつ貼り付けます。先頭に表示される `PS C:\...>` は入力しません。エラーが出た場合は、その段階の対処を済ませてから次へ進んでください。
+
+| 段階 | 次へ進んでよい状態 |
+| --- | --- |
+| [1. 必要なものを準備する](#step-1) | Node.js・npm・Gitのバージョンが表示される |
+| [2. GitHubからコードを取得する](#step-2) | プロジェクトのフォルダーに入り、`package.json` がある |
+| [3. 必要なパッケージを入れる](#step-3) | `npm ci` が終了コード `0` で終わる |
+| [4. .envを作って設定する](#step-4) | プロジェクト直下に `.env` があり、接続情報を保存できている |
+| [5. 自動テストで確認する](#step-5) | `npm test` が失敗なしで終わる |
+| [6. サーバーを起動する](#step-6) | `Server listening on http://127.0.0.1:3000` が表示される |
+| [7. Chromeで画面を開いて認証する](#step-7) | ヘルスチェック・会場画面・操作画面が開く |
+| [8. アバター・マイク・進行を確認する](#step-8) | 実際に音が出て、患者役の返答で台本が進む |
+| [9. X-Gate・外部モニターに表示する](#step-9) | 外部画面に映像が出て、使用するスピーカーから音が出る |
+| [10. 終了・翌日の起動・更新](#step-10) | 正しく停止でき、更新後も起動できる |
+| [任意：Chromeの自動テスト](#browser-test) | ブラウザの自動テストが成功する |
+| [解決しないときに伝える情報](#support) | 失敗した段階・コマンド・エラーを共有できる |
+
+このガイドではサーバーもChromeも同じWindows PCで使います。`localhost` はそのPC自身を指します。インターネット接続も必要です。ローカル起動でも、アバターや音声の処理には外部サービスを使います。
+
+<a id="step-1"></a>
+
+## 1. 必要なものを準備する
+
+### インストールするもの・手元に用意する情報
+
+| 用意するもの | 内容 |
+| --- | --- |
+| Node.jsとnpm | Node.js **22.13以降**。このリポジトリのDocker環境に合わせるなら22系の最新パッチを使用。npmも一緒に入る |
+| Git for Windows | GitHubからコードを取得・更新するために使用 |
+| Google Chrome | 会場画面と操作画面に使用。実際のマイク・スピーカーも接続しておく |
+| GitHubのアクセス権 | 対象リポジトリを閲覧・取得できるアカウント。権限が必要な場合は管理者に依頼 |
+| LiveAvatarの設定 | APIキー、そのキーで使用できるアバターID・音声ID |
+| OpenAI APIキー | 標準設定の意図分類などに使用。未設定でもサーバーの起動確認はできる |
+| 操作用トークン | `OPERATOR_TOKEN`。初回に新しく作る手順は[段階4](#step-4)に記載 |
+
+Node.jsは [公式ダウンロード](https://nodejs.org/en/download) でWindows用インストーラー（`.msi`）を選びます。使用するPCのx64 / ARM64に合わせてください。Gitは [Git for Windowsの公式案内](https://git-scm.com/install/windows)、Chromeは [公式ダウンロード](https://www.google.com/chrome/) を使います。
+
+インストール後にPowerShellを開き直します。Windows Terminal内で開いていた場合は、Windows Terminal自体を閉じてから開き直してください。
+
+```powershell
+node --version
+npm --version
+git --version
+```
+
+**正常な状態：** それぞれバージョンが表示されます。Node.jsは `v22.13.0` 以降が必要です。
+
+### この段階で困ったとき
+
+| 表示・症状 | 確認と対処 |
+| --- | --- |
+| `node` / `npm` / `git` が「認識されません」「見つかりません」 | 対象ソフトをインストールし、PowerShellとWindows Terminalを開き直す。まだ認識されなければ下の `Get-Command` で見つかるか確認し、インストーラーのPATH設定を確認する |
+| `npm.ps1` を読み込めない／「スクリプトの実行が無効」 | `npm.cmd --version` を実行する。成功したら以降の `npm` をすべて `npm.cmd` に置き換える。実行ポリシーの変更は不要 |
+| Node.jsが古い | Node.jsを更新してターミナルを開き直す。`where.exe node` で複数の場所が出る場合は、古いNode.jsが先に見つかっていないか確認する |
+| インストール時に管理者権限や組織の制限で止まる | 管理されているPCならIT担当者にインストールを依頼する |
+
+見つからないコマンドだけを確認します。表示されるパスがインストール先です。
+
+```powershell
+Get-Command node
+Get-Command npm.cmd
+Get-Command git
+where.exe node
+```
+
+PowerShellは拡張子を指定してコマンドを選べるため、`npm.cmd` ならnpmのWindows用コマンドを明示できます。以降の例を読み替える場合は次の対応です。[PowerShellのコマンド解決規則](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_command_precedence)
+
+| 通常のコマンド | `npm.ps1` が使えない場合 |
+| --- | --- |
+| `npm ci` | `npm.cmd ci` |
+| `npm test` | `npm.cmd test` |
+| `npm run dev` | `npm.cmd run dev` |
+| `npm start` | `npm.cmd start` |
+| `npm run test:browser` | `npm.cmd run test:browser` |
+
+<a id="step-2"></a>
+
+## 2. GitHubからコードを取得する
+
+初めて取得する場合の例です。自分のユーザーフォルダーの `source` に配置します。
+
+```powershell
+New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\source"
+Set-Location "$env:USERPROFILE\source"
+git clone --branch feature/production-hardening https://github.com/Kohei-Arita/yamamoto-avatar-scenario.git
+Set-Location .\yamamoto-avatar-scenario
+git branch --show-current
+Test-Path .\package.json
+```
+
+**正常な状態：** ブランチ名が `feature/production-hardening`、`Test-Path` の結果が `True` になります。以降はこのフォルダー内で作業します。
+
+既に取得済みなら `git clone` を繰り返す必要はありません。既存のプロジェクトフォルダーに移動して[更新手順](#update)を使います。上の場所へ取得済みなら移動コマンドは次のとおりです。
+
+```powershell
+Set-Location "$env:USERPROFILE\source\yamamoto-avatar-scenario"
+```
+
+### この段階で困ったとき
+
+| 表示・症状 | 確認と対処 |
+| --- | --- |
+| `Repository not found` / `Authentication failed` / GitHubの401・403 | Chromeで [対象リポジトリ](https://github.com/Kohei-Arita/yamamoto-avatar-scenario) を開き、使用するGitHubアカウントで閲覧できるか確認する。閲覧できなければURL・アクセス権を管理者に確認。Gitからブラウザ認証を求められたら、その権限を持つアカウントで認証する |
+| `destination path ... already exists and is not an empty directory` | 取得先フォルダーが既にある。既存のフォルダーへ移動し、下の確認を行う。中身を削除して取得し直さない |
+| `Could not resolve host` / `Failed to connect` / タイムアウト | ネット接続とGitHubへのアクセスを確認する。組織のネットワークならプロキシ・通信許可についてIT担当者に確認する |
+| `Remote branch ... not found` | このガイドが対象とするブランチが存在するか、GitHubのブランチ一覧で確認する。移動・統合されていたら管理者に現在の配布ブランチを確認する |
+| `Set-Location` でパスが存在しない | cloneが成功しているか確認する。独自の場所へ取得した場合は実際のフォルダーのパスを引用符で囲んで指定する |
+| `not a git repository` / `Test-Path` が `False` | 現在のフォルダーが違う。`Get-Location` で場所を確認し、`.git` と `package.json` があるプロジェクト直下に移動する |
+
+既存フォルダーを確認するコマンドです。`origin` のURLが上記リポジトリであることも確認します。
+
+```powershell
+Get-Location
+git remote -v
+git branch --show-current
+Test-Path .\package.json
+```
+
+認証・URLに関する詳細は [GitHubのcloneエラー対処](https://docs.github.com/en/repositories/creating-and-managing-repositories/troubleshooting-cloning-errors) を参照してください。
+
+<a id="step-3"></a>
+
+## 3. 必要なパッケージを入れる
+
+プロジェクトのフォルダーで実行します。
+
+```powershell
+npm ci
+```
+
+終了してPowerShellの入力待ちに戻ったら、直後に次を実行します。
+
+```powershell
+$LASTEXITCODE
+```
+
+**正常な状態：** 終了コードが `0` で、`node_modules` フォルダーが作成されています。初回はダウンロードに時間がかかります。
+
+`npm ci` は `package-lock.json` に合わせて依存パッケージを入れ直します。既存の `node_modules` は置き換わるため、更新時は先にアプリを停止してください。[npm ciの仕様](https://docs.npmjs.com/cli/v10/commands/npm-ci/)
+
+### この段階で困ったとき
+
+| 表示・症状 | 確認と対処 |
+| --- | --- |
+| `npm.ps1` の実行エラー | `npm.cmd ci` で実行する |
+| `ENOENT` / `Could not read package.json` | [段階2](#step-2)のプロジェクトフォルダーへ移動し、`Test-Path .\package.json` が `True` か確認する |
+| `EBADENGINE` / `Unsupported engine` | `node --version` を確認し、Node.js 22.13以降にする。更新後はターミナルを開き直す |
+| `EUSAGE` / lockファイルがない・内容が一致しない | `package.json` と `package-lock.json` が同じ配布版のものか確認する。手元で変更していなければ[更新手順](#update)で揃える。`package-lock.json` の削除や `--force` で回避しない |
+| `EPERM` / `EBUSY` / ファイルへのアクセス拒否 | 起動中のアプリを止め、対象ファイルを使っているツールを閉じて再試行する。直らなければPCを再起動する。同期フォルダーや `Program Files` 配下を使っている場合は、自分が書き込める `source` 配下での取得を検討する |
+| `ENOTFOUND` / `ETIMEDOUT` / `ECONNRESET` | ネット接続を確認して再実行する。繰り返す場合はnpmレジストリへの通信・プロキシをIT担当者に確認する |
+| `SELF_SIGNED_CERT_IN_CHAIN` / 証明書エラー | 組織のプロキシや証明書設定をIT担当者に確認する。SSLの検証を無効にして進めない |
+| `vulnerabilities` / `npm audit` の案内だけ出た | それだけでインストール失敗とは限らない。終了コードと `npm error` を確認する。依存関係を変える `npm audit fix --force` は実行せず、案内内容を管理者へ共有する |
+
+<a id="step-4"></a>
+
+## 4. .envを作って設定する
+
+### 4-1. 既存の.envがないか確認する
+
+```powershell
+Test-Path .env
+```
+
+- `False`：初回なので、次のコピーを実行します。
+- `True`：既に設定があります。コピーを省略し、メモ帳で編集します。
+
+**`False` だった場合だけ実行：**
+
+```powershell
+Copy-Item .env.example .env
+```
+
+続いてメモ帳で開きます。
+
+```powershell
+notepad .env
+```
+
+`Copy-Item` はファイルをコピーするPowerShellのコマンドです。コピー先に既存の設定がある場合の上書きを避けるため、必ず先に存在を確認してください。[Copy-Itemの仕様](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.management/copy-item)
+
+### 4-2. 設定する値
+
+メモ帳では `.env.example` ではなく **`.env`** を編集します。`項目名=値` の形で、実際の値を `=` の右側に入力し、`Ctrl + S` で保存します。
+
+| 項目 | 設定内容 |
+| --- | --- |
+| `LIVEAVATAR_API_KEY` | 使用するLiveAvatarアカウントのAPIキー。空欄では起動できない |
+| `LIVEAVATAR_AVATAR_ID` | そのAPIキーで利用できるアバターのID。サンプルのIDが利用できるか管理者に確認する |
+| `LIVEAVATAR_VOICE_ID` | 使用する音声のID。APIキーと同じ運用環境で使える値を確認する |
+| `OPENAI_API_KEY` | 意図分類などを使うためのAPIキー。空欄でも起動するが、OpenAIによる補助処理は利用できない |
+| `OPERATOR_TOKEN` | 会場画面と操作画面への共通ログイントークン。空欄では起動できない。APIキーとは別の値 |
+
+新しく `OPERATOR_TOKEN` を作る場合は次を実行し、表示された文字列を `.env` の `OPERATOR_TOKEN=` の右側に貼り付けます。既存のトークンを使う場合は生成不要です。
+
+```powershell
+node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
+```
+
+標準のシナリオ運用では、次の値を使用します。これらは `.env` 内の設定であり、PowerShellに実行するコマンドではありません。
+
+```dotenv
+HOST=127.0.0.1
+PORT=3000
+LIVEAVATAR_LANGUAGE=ja
+LIVEAVATAR_MODE=FULL
+LIVEAVATAR_SELF_CONTROLLED=true
+LIVEAVATAR_ALLOW_INTERRUPT=false
+LIVEAVATAR_OPENING_GREETING=
+SCENARIO_ID=haigan-2026
+SCENARIO_DIR=./data/scenarios
+SCENARIO_SPEECH_MODE=fixed
+SCENARIO_INTENT_LLM=true
+```
+
+`true` / `false` は半角・小文字で入力します。`LIVEAVATAR_OPENING_GREETING` は空欄にして、台本の開始挨拶を使います。その他の項目は、まず `.env.example` の既定値を維持してください。
+
+**正常な状態：** プロジェクト直下に `.env` があり、必要な接続情報を保存できています。ファイル名は次のコマンドで確認できます。内容は表示しません。
+
+```powershell
+Get-ChildItem -Force -Name .env*
+```
+
+### この段階で困ったとき
+
+| 表示・症状 | 確認と対処 |
+| --- | --- |
+| コピー時に `.env.example` が見つからない | 作業フォルダーを確認する。`package.json` と `.env.example` がある場所で実行する |
+| `.env` がエクスプローラーで見つけづらい | 上の `Get-ChildItem` で確認し、`notepad .env` で直接開く |
+| `.env.txt` になっている | エクスプローラーの「表示」→「表示」→「ファイル名拡張子」で拡張子を確認する。下の手順で `.env` に名前を直す |
+| メモ帳で保存できない | 自分が書き込める場所にプロジェクトを置いているか確認する。保存形式はUTF-8を使用する |
+| APIキー・IDが分からない | 使用するアカウントの管理者から受け取る。GitHubのコードには実際のAPIキーは入っていない |
+| 設定を変えても動作が変わらない | 保存したファイルがプロジェクト直下の `.env` か確認する。起動済みなら `Ctrl + C` で止め、`npm run dev` で再起動する |
+
+`.env.txt` の修正は、`Test-Path .env` が **`False`** で、`.env.txt` がある場合だけ実行します。既に `.env` がある場合は、そちらを開いて必要な内容を確認してください。
+
+```powershell
+Rename-Item -LiteralPath .env.txt -NewName .env
+```
+
+`.env` はGitHubへ送られません。PCごとに設定が必要です。APIキーやトークンを含むため、このファイルの内容をエラー報告やスクリーンショットに載せないでください。
+
+<a id="step-5"></a>
+
+## 5. 自動テストで確認する
+
+```powershell
+npm test
+```
+
+**正常な状態：** テストが最後まで実行され、失敗が `0`、終了コードが `0` になります。
+
+| 表示・症状 | 確認と対処 |
+| --- | --- |
+| `npm.ps1` の実行エラー | `npm.cmd test` で実行する |
+| `ERR_MODULE_NOT_FOUND` / パッケージが見つからない | [段階3](#step-3)の `npm ci` が成功したか確認する |
+| テストが失敗する | `node --version`、ブランチ、更新状況を確認する。失敗したテスト名とエラーを控え、管理者に共有する |
+| 読み仮名・シナリオのテストが失敗する | 台本を編集した場合は、実行用JSON・転記用原稿・読み仮名表が揃っているか確認する。[READMEの台本編集](../README.md#台本シナリオの編集)を参照 |
+
+このテストは台本・制御ロジックなどを確認します。**成功しても、APIキーの有効性やWindows実機のマイク・スピーカーが確認済みになるわけではありません。** 続く画面・実音の確認も行ってください。
+
+<a id="step-6"></a>
+
+## 6. サーバーを起動する
+
+```powershell
+npm run dev
+```
+
+`npm.ps1` のエラーが出る場合は次を使います。
+
+```powershell
+npm.cmd run dev
+```
+
+**正常な状態：** 起動ログに次が表示されます。
+
+```text
+Server listening on http://127.0.0.1:3000
+```
+
+**起動中にPowerShellが入力待ちへ戻らないのは正常です。そのウィンドウを開いたまま使います。** 調査コマンドを実行する場合は別のPowerShellを開いてください。
+
+`npm run dev` はJavaScriptの変更を監視してサーバーを再起動します。自動再起動が不要な運用では `npm start` でも起動できます。`.env` や台本JSONを変更したときは、どちらの起動方法でも明示的に停止・再起動してください。再起動すると進行状態も初期化されます。
+
+### この段階で困ったとき
+
+| 表示・症状 | 確認と対処 |
+| --- | --- |
+| `Missing required environment variables: ...` | エラーに出た項目を `.env` に設定する。`.env.example` だけを編集していないか、`.env.txt` になっていないか確認し、保存して再起動する |
+| `LIVEAVATAR_SELF_CONTROLLED=true / LIVEAVATAR_MODE=FULL 専用です` | `.env` の2項目を表示どおりに設定する。`true` は小文字、`FULL` は大文字 |
+| `SCENARIO_SPEECH_MODE` に関するエラー | 標準運用では `SCENARIO_SPEECH_MODE=fixed` に設定する |
+| `DIALOGUE_LLM_TIMEOUT_MS must be a positive number` | `.env` の値を正の整数にする。既定値は `6000` |
+| 台本の `ENOENT` / JSONの構文・スキーマエラー | `SCENARIO_ID=haigan-2026`、`SCENARIO_DIR=./data/scenarios` と作業フォルダーを確認する。手元でJSONを編集した場合はその変更を確認し、[段階5](#step-5)のテスト結果と一緒に管理者へ共有する |
+| `ERR_MODULE_NOT_FOUND` | アプリを停止し、プロジェクト直下で `npm ci` を完了させてから再起動する |
+| `EADDRINUSE` / `address already in use ... 3000` | 3000番ポートが使用中。[下のポート確認](#port-error)を行う |
+| `EACCES` / `listen` に関する権限エラー | `HOST` と `PORT` を確認する。管理PCの制限ならIT担当者に確認。別ポートを使う場合は下の説明に従う |
+| `Failed running ...` / `Waiting for file changes ...` のまま | その直前のエラーで起動に失敗している。ウィンドウが開いていても起動成功ではない。原因を直し、`Ctrl + C` で止めて起動し直す |
+| PowerShellのウィンドウを閉じたら画面が動かなくなった | サーバーも停止している。プロジェクトフォルダーで `npm run dev` を実行し直す |
+
+<a id="port-error"></a>
+
+### 3000番ポートが使用中の場合
+
+まず、このアプリを起動済みのPowerShellがないか確認します。あればそのウィンドウを使い、もう1つ起動する必要はありません。起動し直す場合は、元のウィンドウで `Ctrl + C` を押してから実行します。
+
+使用しているプロセスを調べる場合は、別のPowerShellで次を実行します。
+
+```powershell
+Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue | Select-Object LocalAddress,LocalPort,OwningProcess
+```
+
+`OwningProcess` がプロセスIDです。例えば `12345` と出た場合は次で名前を確認できます。**実際に表示された番号に置き換えてください。**
+
+```powershell
+Get-Process -Id 12345
+```
+
+自分で起動したアプリと確認できたものを、そのアプリの通常の終了方法で停止します。`node` という名前だけで、他のプロセスまでまとめて終了しないでください。接続一覧の項目は [Get-NetTCPConnectionの仕様](https://learn.microsoft.com/en-us/powershell/module/nettcpip/get-nettcpconnection) を参照できます。
+
+3000番を使う必要がなければ `.env` を `PORT=3001` に変更して再起動する方法もあります。その場合は、この後のURLも**会場・操作・ヘルスチェックのすべてを `localhost:3001` に変更**してください。
+
+<a id="step-7"></a>
+
+## 7. Chromeで画面を開いて認証する
+
+サーバーのPowerShellを開いたまま、同じWindows PCのChromeで次の順に確認します。
+
+1. [http://localhost:3000/api/health](http://localhost:3000/api/health) を開く。
+2. `{"ok":true,"service":"yamamotoavator-demo"}` が表示されることを確認する。
+3. [http://localhost:3000/operator](http://localhost:3000/operator) を開き、`.env` に設定した `OPERATOR_TOKEN` の**値だけ**を入力して「接続」を押す。
+4. 別のタブで [http://localhost:3000/xgate](http://localhost:3000/xgate) を開く。入場認証画面が出たら同じトークンを入力する。
+5. 会場画面の `Start` を押す。Chromeがマイクの許可を求めたら許可する。
+
+**正常な状態：** 操作画面に現在ノードが表示され、会場画面が接続されます。音声確認は次の段階で行います。`/api/health` の成功は、サーバーが動いていることの確認です。外部サービスの認証までは検証していません。
+
+### この段階で困ったとき
+
+| 表示・症状 | 確認と対処 |
+| --- | --- |
+| `ERR_CONNECTION_REFUSED` / 「このサイトにアクセスできません」 | [段階6](#step-6)の起動ログを確認する。PowerShellが閉じていないか、エラーが出ていないか確認。`PORT` を変えた場合はURLの番号も合わせる |
+| `localhost` で開けないがサーバーは起動している | `http://127.0.0.1:3000/api/health` を試す。こちらで開く場合は会場画面・操作画面も `127.0.0.1` に統一し、再認証する |
+| `/` を開いたら `/xgate` へ移動する | 正常。開発者向けの確認画面は `/index.html` を明示して開く |
+| トークンが正しくない／ログイン時の401 | `.env` の `OPERATOR_TOKEN` の値だけを貼り付ける。`OPERATOR_TOKEN=` や余分な空白を含めない。値を変更した場合はサーバーを再起動し、両画面で再認証する |
+| 入場認証へ戻される／時間が経つと401 | 会場画面の認証は12時間有効。再認証する。`localhost` と `127.0.0.1`、ポート番号が変わる場合もURLを揃えて認証を確認する |
+| ログインを繰り返して429 | 失敗回数の制限。表示される待ち時間に従い、通常は約1分待ってから正しいトークンで試す |
+| 403 / `Cross-origin` など | 会場・操作画面を同じ `http://localhost:3000` から開いているか確認する。HTMLファイルのダブルクリックや別の配信サーバーからは開かない |
+| `/operator` の「会場画面」が未接続 | `/xgate` 側で認証して `Start` したか確認する。操作画面だけではアバターのセッションは開始されない |
+| ヘルスチェックは通るが `Start` が失敗する | サーバー起動後の接続エラー。[段階8](#step-8)のアバター接続を確認する |
+
+<a id="step-8"></a>
+
+## 8. アバター・マイク・シナリオの進行を確認する
+
+### 8-1. アバターに接続できない
+
+初回は `/xgate` を1枚だけ開き、手動で `Start` します。`/index.html` でも同時に `Start` しないでください。失敗した場合は、画面のエラーと、サーバーを起動したPowerShellのログを確認します。
+
+| 表示・症状 | 確認と対処 |
+| --- | --- |
+| `別のタブでセッションが進行中です` | 他の `/xgate`・`/index.html` で接続していれば `Stop` する。使用する会場画面を1枚にしてから再実行する |
+| `create_session_token` / `start_session` の401・403 | 入場認証が通っていて、ログにLiveAvatar側の失敗が出る場合は `LIVEAVATAR_API_KEY` と利用権限を確認する。`.env` を直したらサーバーを再起動する |
+| アバターID・音声IDに関する400・404など | `.env` のIDが、そのAPIキーで利用できるアバター・音声か確認する。`.env.example` のIDが利用可能とは限らない |
+| LiveAvatar側の429・利用上限に関するメッセージ | 同時接続数や利用枠を管理者に確認する。不要なセッションを `Stop` してから再試行する。`Start` を連打しない |
+| タイムアウト／LiveKitへ接続できない／音声が届かない | ネット接続を確認し、`Stop` 後に `Start` する。会場のネットワークでだけ失敗する場合は、LiveAvatar・LiveKitの通信が許可されているかIT担当者に確認する |
+| `Unknown session` / 再接続を求めるエラー | 古いセッションのままになっている可能性がある。`Stop` → `Start` で作り直し、操作画面の進行位置を確認する |
+
+ネットワークの切り分けには次のコマンドが使えます。
+
+```powershell
+Test-NetConnection github.com -Port 443
+Test-NetConnection registry.npmjs.org -Port 443
+Test-NetConnection api.liveavatar.com -Port 443
+```
+
+`TcpTestSucceeded : True` は、指定した宛先のTCP 443番へ接続できたという意味です。APIキーの有効性やLiveKitの映像・音声通信まで確認した結果ではありません。[Test-NetConnectionの仕様](https://learn.microsoft.com/en-us/powershell/module/nettcpip/test-netconnection)
+
+### 8-2. マイクが使えない・声を拾わない
+
+次の順に確認します。
+
+1. Windowsの「設定」→「プライバシーとセキュリティ」→「マイク」で、「マイクへのアクセス」「アプリにマイクへのアクセスを許可する」「デスクトップ アプリにマイクへのアクセスを許可する」を確認する。
+2. 「設定」→「システム」→「サウンド」→「入力」で、使用するマイク・USBオーディオ機器を選ぶ。話したときに入力レベルが動くことを確認する。
+3. Chromeのアドレスバー左のサイト設定からマイクを許可する。`chrome://settings/content/microphone` でも使用するマイクを確認する。
+4. アプリを `Stop` → `Start` して接続し直す。
+5. 操作画面の「患者の音声入力」を確認し、手動停止中なら「音声入力を再開」を押す。アバターが話し終わってから患者役が返答する。
+
+Windows側の操作は [Microsoftのマイク対処手順](https://support.microsoft.com/en-us/windows/hardware/drivers/fix-microphone-problems)、Chrome側は [カメラとマイクの許可設定](https://support.google.com/chrome/answer/2693767?hl=ja) を参照してください。
+
+| 表示・症状 | 確認と対処 |
+| --- | --- |
+| `NotAllowedError` / マイク権限が許可されていない | WindowsとChromeの両方の許可を確認し、ページを再読み込みして `Start` する。権限ダイアログを閉じただけの場合も許可し直す |
+| `NotFoundError` / 利用できるマイクが見つからない | マイクの接続・電源を確認する。Windowsの入力機器一覧に表示されるか確認し、接続後にChromeを開き直す |
+| `NotReadableError` / マイクが他のアプリに使用されている | 会議・録音アプリなどマイクを使うアプリを終了して再試行する。直らなければ接続・ドライバーも確認する |
+| Windowsの入力レベルが動かない | マイク本体やミキサーのミュート、ケーブル、入力先、入力音量を確認する。先にWindows側で声が入る状態にする |
+| Windowsでは声が入るがアプリでは反応しない | Chromeが同じ入力機器を選んでいるか確認する。操作画面で手動停止・Voting待機・終端になっていないか確認する |
+| アバターが話している間だけ返答できない | 標準設定では正常。アバターの発話中は患者入力を受け付けない。話し終わってから返答する |
+| 社内LANのIPアドレスを使うとマイクを許可できない | この手順では同じPCの `http://localhost:3000` を使う。別PCから通常の `http://192.168...` などへ接続すると、マイクに必要な安全な接続条件を満たさない |
+
+ブラウザのマイクは、原則としてHTTPSまたは `localhost` などの安全なコンテキストが必要です。`HOST` を変えるだけでは、別PCからのHTTPアクセスでマイクが使えるようにはなりません。[MDNのマイク利用条件](https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getUserMedia#privacy_and_security)
+
+### 8-3. 映像は出るが音が聞こえない
+
+1. Windowsの「設定」→「システム」→「サウンド」→「出力」で、実際に音を出すスピーカー・HDMI出力・USBオーディオ機器を選ぶ。
+2. Windowsの音量ミキサーでChromeがミュートされていないか確認する。Chromeのタブ／サイトのミュートも確認する。
+3. 会場画面に音声再生のためのクリック案内が出ていたら、その画面をクリックする。
+4. 音量を確認してから、操作画面の「再発話」で台詞を聞き直す。接続エラーが残っている場合は `Stop` → `Start` する。
+
+HDMIを挿した直後に出力先が変わることがあります。会場画面の字幕や「発話終了通知あり」は、実際にスピーカーから音が出た証拠ではありません。使用するスピーカーで実音を確認してください。
+
+### 8-4. 台本が進まない・途中で止まった
+
+開始挨拶の後、患者役が返答し、一区切りが確定してから次の台詞へ進むことを確認します。すべての待機がエラーではありません。操作画面の「現在ノード」「患者の音声入力」「会場画面」を見て判断します。
+
+| 状態・症状 | 正常か／どう操作するか |
+| --- | --- |
+| Voting①で無言になる | 正常。操作画面のA/B/Cから会場の結果を選ぶ。Voting待機中はマイクが停止する |
+| Voting②で無言になる | 正常。操作画面のA/B/C/Dから会場の結果を選ぶ |
+| 問診終了後、司会の説明中に無言になる | 正常。入力が手動停止されていないことを確認し、司会が「PET画像を提示します」など台本所定の合図を出すと再開する |
+| 最後の台詞の後に反応しない | 終端なら正常。マイクは停止する。最初からやり直す場合は「リセット」を使う |
+| 「停止中（操作係の再開待ち）」 | 「音声入力を再開」を押す。手動停止は再接続や分岐選択だけでは解除されない |
+| 「30秒以内に聞き取れる内容がなく、音声入力を停止しました」 | マイク・入力レベルを確認し、「音声入力を再開」を押して同じ質問への返答を受け付ける。発話検出後の受付に上限があるためで、単に無音で30秒待つたびに止まる仕様ではない |
+| 音声エラー／台詞の開始・終了を確認できない | 実音と接続を確認し、操作画面の「再発話」を使う。再接続を求められている場合は `Stop` → `Start` してから進行位置を確認する |
+| 「サーバー再起動：ジャンプで中断位置を指定してください」 | マイクを停止した状態で待っている。操作画面の「ジャンプ」で中断したノードを指定する。最初からなら「リセット」 |
+| 操作で409が返る | 古い進行状態への操作が拒否された。最新の現在ノードを確認し、必要なら操作画面を再読み込み・再接続して、必要な操作を1回だけ行う |
+| 操作画面が「再接続待ち」のまま | サーバーが動いているかとURLを確認する。復旧後に操作画面を再読み込みして接続する。サーバーを再起動した場合は進行位置の復帰も必要 |
+| 古い台詞になる | [更新手順](#update)でブランチ・コードを確認し、サーバーを停止・再起動して両画面を再読み込みする。台本JSONは起動後にキャッシュされる |
+
+「次へ（強制）」は台本を先へ進める操作です。聞こえなかった台詞をもう一度聞く用途には「再発話」を使ってください。投票・合図・患者返答を待っている場合は、その条件に従って進めます。
+
+シナリオ全体は [READMEの全体の流れ](../README.md#全体の流れ)、途中復帰に使うノードは [台本とノードの対応](scenario-map.md) を参照してください。音声のひらがな読みは `src/features/dialogue/script-readings.js`、実行用台本は `data/scenarios/haigan-2026.json` です。字幕は漢字表記のままです。
+
+<a id="step-9"></a>
+
+## 9. X-Gate・外部モニターに表示する
+
+まずWindows単体で映像と音声が動くことを確認してから、外部表示を接続します。
+
+1. Windows PCとX-Gate・外部モニターをHDMIで接続し、外部側の電源とHDMI入力を確認する。
+2. `Windows + P` を押し、「拡張」を選ぶ。
+3. Windowsの「設定」→「システム」→「ディスプレイ」で、外部画面が認識されていることを確認する。
+4. `/xgate` を開いたChromeウィンドウを外部画面へ移動し、`Fullscreen` ボタンで全画面にする。操作画面 `/operator` はPC側に置く。
+5. 実際に使用する音声出力を選び直し、「再発話」で会場のスピーカーから聞こえることを確認する。
+
+Windowsの画面切り替えは [Microsoftの複数モニター手順](https://support.microsoft.com/en-us/windows/hardware/display-graphics/how-to-use-multiple-monitors-in-windows) を参照してください。
+
+| 表示・症状 | 確認と対処 |
+| --- | --- |
+| 外部画面が真っ黒／信号なし | 電源・HDMI入力・ケーブル・変換アダプターを確認する。ディスプレイ設定で外部画面が検出されるか確認する |
+| PC画面と同じものしか映らない | `Windows + P` で「複製」ではなく「拡張」を選ぶ |
+| 外部画面にChromeが見当たらない | ディスプレイ配置を確認してウィンドウを移動する。対象ウィンドウを選び `Windows + Shift + 左／右矢印` で移動する方法もある |
+| PC側で全画面になってしまった | `Esc` で全画面を解除し、外部画面へ移動してから `Fullscreen` を押す |
+| HDMI接続後に音が出なくなった | [音が聞こえない場合](#step-8)の手順でWindowsの出力先とChromeの音量を確認する |
+
+確認後の会場用URLは `http://localhost:3000/xgate?autostart=1&controls=0&subtitles=1` です。最初は通常の `/xgate` で手動操作を確認してください。URLを切り替える際は既存の会場画面で `Stop` してから開き直します。自動再生がブラウザに止められた場合は画面のクリック案内に従ってください。
+
+<a id="step-10"></a>
+
+## 10. 終了・翌日の起動・更新
+
+### 終了する
+
+1. 会場画面の `Stop` を押す。
+2. サーバーを起動したPowerShellで `Ctrl + C` を押す。
+3. バッチ処理を終了するか確認された場合は `Y` を入力する。
+4. PowerShellが入力待ちへ戻ったことを確認する。
+
+### 次回からの通常起動
+
+初回設定が完了していれば、毎回インストールや `.env` のコピーをする必要はありません。
+
+```powershell
+Set-Location "$env:USERPROFILE\source\yamamoto-avatar-scenario"
+npm run dev
+```
+
+Chromeで `/operator` と `/xgate` を開き、認証・`Start`・マイクと実音を確認します。別の場所へ取得した場合は実際のパスに合わせてください。サーバーを止めると進行状態は失われます。
+
+<a id="update"></a>
+
+### GitHubにある新しいコード・台本を取り込む
+
+GitHubが更新されても、Windowsに取得済みのコードは自動では切り替わりません。
+
+1. 会場画面で `Stop` し、PowerShellの `Ctrl + C` でサーバーを停止する。
+2. 次を実行し、ブランチと手元の変更を確認する。
+
+```powershell
+Set-Location "$env:USERPROFILE\source\yamamoto-avatar-scenario"
+git branch --show-current
+git status --short
+```
+
+ブランチが `feature/production-hardening` で、`git status --short` に何も表示されなければ、次へ進めます。変更が表示された場合は、そのファイルを確認し、必要な変更を保存して管理者へ相談してから更新します。通常、`.env` はこの一覧には出ません。
+
+3. 1行ずつ実行し、すべて成功したら起動する。
+
+```powershell
+git pull --ff-only
+npm ci
+npm test
+git log -1 --oneline
+npm run dev
+```
+
+4. Chromeの会場画面と操作画面を再読み込みし、認証・`Start`・台詞を確認する。途中から再開する場合は「ジャンプ」で位置を指定する。
+
+**正常な状態：** 配布されたコミットと `git log -1 --oneline` の先頭のIDが一致し、新しい台詞が読み上げられます。`git pull` の `Already up to date` はエラーではありません。
+
+### 更新時に困ったとき
+
+| 表示・症状 | 確認と対処 |
+| --- | --- |
+| ブランチが違う | 手元の変更がないことを確認してから `git switch feature/production-hardening` を実行する。対象ブランチがない場合は、配布ブランチが変更されていないか管理者に確認する |
+| `Your local changes ... would be overwritten` | 手元の編集がある。必要なファイルを保存し、管理者と反映方法を確認する。`git reset --hard` で消さない |
+| `Not possible to fast-forward` / 履歴が分岐している | Windows側にも別のコミットがある可能性がある。更新を止め、ブランチとコミットを管理者に共有する。強制上書きしない |
+| 認証・接続エラー | [段階2](#step-2)のGitHubへのアクセス確認を行う |
+| 更新後に依存パッケージのエラー | サーバーを停止した状態で `npm ci` が成功したか確認する |
+| 新しい設定項目が足りない | `.env.example` の追加項目を既存の `.env` に追記する。APIキー入りの `.env` をサンプルで丸ごと上書きしない |
+| コミットは新しいのに台詞・画面が古い | 別フォルダーのサーバーが動いていないか、URL・ポートが合っているか確認する。サーバーを再起動し、Chromeで `Ctrl + Shift + R` を押して再読み込みする |
+
+<a id="browser-test"></a>
+
+## 任意：Chromeの自動テスト
+
+既存のブラウザテストをWindowsで試す場合は、Chromeの実行ファイルを `CHROME_BIN` に指定します。標準的なインストール先なら次の例を使えます。
+
+```powershell
+$env:CHROME_BIN = 'C:\Program Files\Google\Chrome\Application\chrome.exe'
+Test-Path $env:CHROME_BIN
+```
+
+`True` になったことを確認して実行します。
+
+```powershell
+npm run test:browser
+```
+
+| 表示・症状 | 確認と対処 |
+| --- | --- |
+| `Test-Path` が `False` / `spawn ... ENOENT` | 実際のインストール先を確認する。`C:\Program Files (x86)\Google\Chrome\Application\chrome.exe` やユーザー配下の場合もある。ショートカットのリンク先などで調べ、その絶対パスを `CHROME_BIN` に指定する |
+| Chromeの起動・接続でタイムアウト | 実行ファイルのパス、Chromeが通常起動できるか、組織の実行制限を確認する。エラーを保存して管理者へ共有する |
+| テストが失敗する | 失敗した項目とログを保存し、段階5の結果と一緒に共有する |
+
+この設定は実行したPowerShellのセッション内で有効です。自動テストではLiveAvatar・LiveKitとマイク入力を模擬するため、実際の外部サービス接続・マイク・HDMI出力は[段階8](#step-8)・[段階9](#step-9)で確認してください。
+
+<a id="support"></a>
+
+## 解決しないときに伝える情報
+
+次の情報を揃えると、どの段階の問題か切り分けやすくなります。
+
+- このガイドの段階番号と、実行したコマンドまたは押したボタン。
+- エラー全文とその直前の数行。画面のエラーか、PowerShellのエラーかも記載する。
+- 使用した画面のURL。トークンなどの秘密情報は含めない。
+- Windowsのバージョン、Chromeのバージョン、使用するマイク・音声出力。
+- 次のコマンドの結果。
+
+```powershell
+Get-Location
+node --version
+npm.cmd --version
+git --version
+git branch --show-current
+git log -1 --oneline
+git status --short
+```
+
+APIキー・`OPERATOR_TOKEN`・セッショントークン・Cookieなどがエラーや画面に含まれていたら、伏せて共有してください。`.env` の内容そのものは送らないでください。
+
+このガイドは現行コードと公式ドキュメントを照合して作成しています。**Windows実機でのコマンド実行・マイク・X-Gate出力は未検証です。** 初回セットアップでは、各段階の「正常な状態」と実際の映像・音声を確認してください。

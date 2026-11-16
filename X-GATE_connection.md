@@ -2,7 +2,7 @@
 
 Macでアプリをローカル起動し、X-Gateへ表示して本番運用する手順です。
 
-別のWindows PCでの起動、WindowsからのHDMI出力、MacとWindowsで表示・操作を分ける場合は [Mac・Windowsセットアップガイド](docs/mac-windows-setup.md) を参照してください。
+Windows PCでの準備・起動・HDMI出力と、各段階のエラー対処は [Windowsセットアップガイド](docs/windows-setup.md) を参照してください。
 
 ## まず前提
 
