@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>会場画面への接続</title>
+    <link rel="stylesheet" href="/operator.css" />
+  </head>
+  <body class="operator-body">
+    <main class="operator-main">
+      <h1>会場画面への接続</h1>
+      <p>開始前に OPERATOR_TOKEN で認証してください。有効期間は12時間です。</p>
+      <form id="accessForm" class="operator-panel">
+        <label for="accessToken">接続トークン</label>
+        <input id="accessToken" type="password" autocomplete="current-password" required />
+        <button type="submit" disabled>認証して会場画面へ</button>
+      </form>
+      <p id="accessMessage" role="alert"></p>
+    </main>
+    <script type="module" src="/access.js"></script>
+  </body>
+</html>

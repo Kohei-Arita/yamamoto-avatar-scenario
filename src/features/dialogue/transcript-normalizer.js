@@ -105,7 +105,11 @@ export function normalizeMedicalTranscript(rawText, { historyMessages = [] } = {
   ];
 
   for (const rule of rules) {
-    if (!rule.test) {
+    // test は RegExp または boolean。RegExpの場合は現在のテキストに対して評価する。
+    const shouldApply =
+      rule.test instanceof RegExp ? rule.test.test(normalizedText) : Boolean(rule.test);
+
+    if (!shouldApply) {
       continue;
     }
 
@@ -127,16 +131,4 @@ export function normalizeMedicalTranscript(rawText, { historyMessages = [] } = {
     repairs,
     changed: normalizedText !== String(rawText || "").trim()
   };
-}
-
-export function buildPromptUserMessage(transcript) {
-  if (!transcript?.changed) {
-    return transcript?.normalizedText || transcript?.rawText || "";
-  }
-
-  return [
-    `患者発話（音声認識原文）: ${transcript.rawText}`,
-    `解釈候補: ${transcript.normalizedText}`,
-    "指示: 解釈候補を優先しつつ、必要なら短く確認しながら問診してください。"
-  ].join("\n");
 }

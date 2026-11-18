@@ -220,27 +220,6 @@ pre,
   text-transform: uppercase;
 }
 
-.subtitle-box {
-  position: absolute;
-  left: 50%;
-  bottom: 18px;
-  transform: translateX(-50%);
-  width: min(calc(100% - 32px), 760px);
-  padding: 12px 16px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 18px;
-  background: rgba(11, 17, 19, 0.7);
-  color: #f8f7f2;
-  text-align: center;
-  line-height: 1.55;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-  font-family: "Avenir Next", "Segoe UI", sans-serif;
-  font-size: clamp(0.96rem, 1.5vw, 1.08rem);
-  backdrop-filter: blur(10px);
-}
-
 .actions-row {
   margin-top: 18px;
   justify-content: flex-start;
@@ -374,12 +353,6 @@ pre {
   .actions-row {
     flex-direction: column;
     align-items: stretch;
-  }
-
-  .subtitle-box {
-    bottom: 12px;
-    width: calc(100% - 20px);
-    padding: 10px 12px;
   }
 
   button {

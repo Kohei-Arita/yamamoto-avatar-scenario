@@ -2,15 +2,21 @@ import {
   createSessionToken,
   getPublicConfig,
   startSession,
-  stopSession
+  stopSession,
+  keepSessionAlive
 } from "./liveavatar.service.js";
+import { registerKnownSessionId, isRegisteredSessionId } from "../dialogue/session-registry.js";
+import { touchScenarioSession } from "../scenario/scenario.store.js";
 
-const RECENT_SESSION_TOKEN_TTL_MS = 10_000;
-const recentSessionTokens = new Map();
 const inFlightSessionTokens = new Map();
 
 function getReferer(req) {
-  return req.get("referer") || null;
+  try {
+    const url = new URL(req.get("referer"));
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return null;
+  }
 }
 
 function getOrigin(req) {
@@ -41,35 +47,13 @@ function getClientFingerprint(req) {
     ip: req.ip || req.socket?.remoteAddress || "unknown",
     userAgent: req.get("user-agent") || "",
     origin: req.get("origin") || "",
-    referer: req.get("referer") || ""
-  });
-}
-
-function pruneExpiredRecentSessionTokens() {
-  const now = Date.now();
-
-  for (const [key, entry] of recentSessionTokens.entries()) {
-    if (!entry || entry.expiresAt <= now) {
-      recentSessionTokens.delete(key);
-    }
-  }
-}
-
-function getRecentSessionToken(req) {
-  pruneExpiredRecentSessionTokens();
-  const existing = recentSessionTokens.get(getClientFingerprint(req));
-  return existing?.data ?? null;
-}
-
-function rememberRecentSessionToken(req, data) {
-  pruneExpiredRecentSessionTokens();
-  recentSessionTokens.set(getClientFingerprint(req), {
-    data,
-    expiresAt: Date.now() + RECENT_SESSION_TOKEN_TTL_MS
+    referer: getReferer(req) || ""
   });
 }
 
 function buildSessionTokenResponse(data) {
+  registerKnownSessionId(data?.session_id || null);
+
   return {
     ok: true,
     session_id: data.session_id || null,
@@ -99,13 +83,6 @@ export async function postSessionToken(req, res) {
   const key = getClientFingerprint(req);
 
   try {
-    const recentData = getRecentSessionToken(req);
-
-    if (recentData) {
-      logSessionTokenEvent("create_session_token_reused", req, recentData);
-      return res.json(buildSessionTokenResponse(recentData));
-    }
-
     const inFlight = inFlightSessionTokens.get(key);
 
     if (inFlight) {
@@ -127,7 +104,6 @@ export async function postSessionToken(req, res) {
 
     try {
       const data = await requestPromise;
-      rememberRecentSessionToken(req, data);
       return res.json(buildSessionTokenResponse(data));
     } finally {
       inFlightSessionTokens.delete(key);
@@ -194,6 +170,27 @@ export async function postStopSession(req, res) {
 
     return res.json({ ok: true, raw: data });
   } catch (error) {
+    // 開始前に停止された・すでに終了済みのセッションは正常系として扱う
+    // (start中にstopが割り込んだ場合などに発生する)
+    if (error.status === 404) {
+      console.log("[liveavatar] stop_session_already_gone", JSON.stringify({ status: 404 }));
+      return res.json({ ok: true, alreadyStopped: true });
+    }
+
     return sendError(res, "stop_session", error);
+  }
+}
+
+export async function postKeepAlive(req, res) {
+  const { sessionId } = req.body || {};
+  if (!isRegisteredSessionId(sessionId)) {
+    return res.status(403).json({ ok: false, error: "Unknown session" });
+  }
+  try {
+    await keepSessionAlive(sessionId);
+    touchScenarioSession(sessionId);
+    return res.json({ ok: true });
+  } catch (error) {
+    return sendError(res, "keep_alive", error);
   }
 }

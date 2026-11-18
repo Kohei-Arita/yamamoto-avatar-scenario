@@ -1,4 +1,5 @@
 import env from "../../config/env.js";
+import { setTimeout as delayWithSignal } from "node:timers/promises";
 import { getMessageText } from "./chat-message.js";
 
 const RETRYABLE_STATUS_CODES = new Set([429, 500, 502, 503]);
@@ -9,16 +10,12 @@ function supportsTemperature(model) {
   return !/^(o[1-9]|gpt-5)/i.test(String(model || ""));
 }
 
-function buildChatCompletionsPayload(messages, { temperature, model, stream = false } = {}) {
+function buildChatCompletionsPayload(messages, { temperature, model } = {}) {
   const resolvedModel = model || env.openAiModel;
   const payload = {
     model: resolvedModel,
     messages
   };
-
-  if (stream) {
-    payload.stream = true;
-  }
 
   if (supportsTemperature(resolvedModel) && temperature !== undefined) {
     payload.temperature = temperature;
@@ -55,7 +52,7 @@ async function withRetry(fn, { maxRetries = MAX_RETRIES, signal } = {}) {
         JSON.stringify({ attempt: attempt + 1, delay, error: error.message })
       );
 
-      await new Promise((resolve) => setTimeout(resolve, delay));
+      await delayWithSignal(delay, undefined, { signal });
     }
   }
 }
@@ -87,6 +84,8 @@ async function postChatCompletions(payload, { signal, errorMessage }) {
 }
 
 export async function callUpstreamOpenAi(messages, { temperature = 0.2, signal, model } = {}) {
+  const timeout = AbortSignal.timeout(env.dialogueLlmTimeoutMs);
+  signal = signal ? AbortSignal.any([signal, timeout]) : timeout;
   return withRetry(
     async () => {
       const response = await postChatCompletions(
@@ -99,113 +98,4 @@ export async function callUpstreamOpenAi(messages, { temperature = 0.2, signal, 
     },
     { signal }
   );
-}
-
-export async function callUpstreamOpenAiStream(
-  messages,
-  { temperature = 0.2, signal, onContentDelta = () => {}, model } = {}
-) {
-  const response = await withRetry(
-    () =>
-      postChatCompletions(
-        buildChatCompletionsPayload(messages, { temperature, model, stream: true }),
-        {
-          signal,
-          errorMessage: "Upstream LLM stream failed"
-        }
-      ),
-    { signal }
-  );
-
-  if (!response.body) {
-    throw new Error("Upstream LLM stream body is missing");
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let content = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    buffer += decoder.decode(value || new Uint8Array(), { stream: !done }).replace(/\r/g, "");
-
-    while (true) {
-      const boundary = buffer.indexOf("\n\n");
-
-      if (boundary < 0) {
-        break;
-      }
-
-      const rawEvent = buffer.slice(0, boundary);
-      buffer = buffer.slice(boundary + 2);
-
-      const data = rawEvent
-        .split("\n")
-        .filter((line) => line.startsWith("data:"))
-        .map((line) => line.slice(5).trimStart())
-        .join("\n")
-        .trim();
-
-      if (!data) {
-        continue;
-      }
-
-      if (data === "[DONE]") {
-        return content;
-      }
-
-      const parsed = JSON.parse(data);
-      const delta = getMessageText(parsed?.choices?.[0]?.delta?.content);
-
-      if (!delta) {
-        continue;
-      }
-
-      content += delta;
-      await onContentDelta(delta, content);
-    }
-
-    if (done) {
-      break;
-    }
-  }
-
-  return content;
-}
-
-export async function generateAssistantContent(
-  messages,
-  { temperature = 0.2, signal, onContentDelta, model } = {}
-) {
-  if (typeof onContentDelta === "function") {
-    let hasDeliveredDelta = false;
-
-    try {
-      return await callUpstreamOpenAiStream(messages, {
-        temperature,
-        signal,
-        onContentDelta: async (delta, content) => {
-          hasDeliveredDelta = true;
-          await onContentDelta(delta, content);
-        },
-        model
-      });
-    } catch (error) {
-      if (hasDeliveredDelta) {
-        throw error;
-      }
-
-      console.warn(
-        "[dialogue] upstream_stream_fallback",
-        JSON.stringify({
-          message: error.message,
-          details: error.details || null,
-          model: model || env.openAiModel
-        })
-      );
-    }
-  }
-
-  return callUpstreamOpenAi(messages, { temperature, signal, model });
 }

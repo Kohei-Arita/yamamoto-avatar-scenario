@@ -1,5 +1,9 @@
 import app from "./app.js";
-import env from "./config/env.js";
+import env, { assertRuntimeConfig } from "./config/env.js";
+import { getScenario } from "./features/scenario/scenario-loader.js";
+
+assertRuntimeConfig();
+getScenario();
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 

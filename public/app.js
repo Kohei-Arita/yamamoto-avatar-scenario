@@ -5,12 +5,11 @@ const remoteVideo = document.getElementById("remoteVideo");
 const remoteCanvas = document.getElementById("remoteCanvas");
 const remoteAudio = document.getElementById("remoteAudio");
 const videoPlaceholder = document.getElementById("videoPlaceholder");
-const subtitleBox = document.getElementById("subtitleBox");
 const startBtn = document.getElementById("startBtn");
 const stopBtn = document.getElementById("stopBtn");
 const chromaKeyToggle = document.getElementById("chromaKeyToggle");
 const logEl = document.getElementById("log");
-const ragLogEl = document.getElementById("ragLog");
+const dialogueLogEl = document.getElementById("dialogueLog");
 const connectionStateEl = document.getElementById("connectionState");
 const micStateEl = document.getElementById("micState");
 const configWarningEl = document.getElementById("configWarning");
@@ -19,7 +18,7 @@ const sandboxValueEl = document.getElementById("sandboxValue");
 const avatarValueEl = document.getElementById("avatarValue");
 const languageValueEl = document.getElementById("languageValue");
 
-let ragPollTimer = null;
+let dialoguePollTimer = null;
 
 function log(...args) {
   const text = args
@@ -50,13 +49,13 @@ function setConfigWarning(message) {
   configWarningEl.textContent = message;
 }
 
-function setRagLogText(text) {
-  if (ragLogEl) ragLogEl.textContent = text;
+function setDialogueLogText(text) {
+  if (dialogueLogEl) dialogueLogEl.textContent = text;
 }
 
 function resetDebugUi() {
-  stopRagPolling();
-  setRagLogText("");
+  stopDialoguePolling();
+  setDialogueLogText("");
   videoPlaceholder.classList.remove("hidden");
   startBtn.disabled = false;
   stopBtn.disabled = true;
@@ -67,25 +66,7 @@ function describeMissingPersona(config) {
 
   if (config.selfControlled) {
     messages.push(
-      "Self-controlled mode が有効です。LiveAvatar は文字起こしとアバター再生だけを担当し、応答本文はこのサーバーの RAG で生成します。"
-    );
-  }
-
-  if (!config.selfControlled && !config.hasLlmConfigurationId) {
-    messages.push(
-      "Custom LLM を使う場合は `LIVEAVATAR_LLM_CONFIGURATION_ID` を設定してください。未設定なら Full mode 既定の LLM が使われます。"
-    );
-  }
-
-  if (!config.selfControlled && !config.hasContextId && !config.hasVoiceId) {
-    messages.push(
-      "`LIVEAVATAR_CONTEXT_ID` と `LIVEAVATAR_VOICE_ID` が未設定です。接続はできても会話や声の挙動が期待通りにならない可能性があります。"
-    );
-  }
-
-  if (!config.selfControlled && !config.hasContextId) {
-    messages.push(
-      "`LIVEAVATAR_CONTEXT_ID` が未設定です。FULL mode でも返答が成立しない場合があります。"
+      "Self-controlled mode が有効です。LiveAvatar は文字起こしとアバター再生だけを担当し、応答セリフはこのサーバーのシナリオエンジンが決定します。"
     );
   }
 
@@ -103,7 +84,6 @@ const manager = createSessionManager({
     remoteCanvas,
     remoteAudio,
     videoPlaceholder,
-    subtitleBox,
     chromaKeyToggle
   },
   chromaKeyOptions: { minHue: 60, maxHue: 180, minSaturation: 0.1, threshold: 1.0 },
@@ -111,15 +91,15 @@ const manager = createSessionManager({
   onLog: log,
   onConnectionStateChange: setConnectionState,
   onMicStateChange: setMicState,
-  onRagAnswer: (result) => log("RAG answer", { content: result.content }),
+  onAnswer: (result) => log("Scenario answer", { content: result.content }),
   onError: (error) => log("Error:", error.message),
   onDisconnected: () => resetDebugUi()
 });
 
-async function refreshRagLogs() {
+async function refreshDialogueLogs() {
   const sessionId = manager.getSessionId();
 
-  if (!sessionId || !ragLogEl) {
+  if (!sessionId || !dialogueLogEl) {
     return;
   }
 
@@ -130,22 +110,18 @@ async function refreshRagLogs() {
     return;
   }
 
-  setRagLogText(
+  setDialogueLogText(
     (data.logs || [])
       .map((entry) =>
         [
           `[${entry.timestamp}] ${entry.kind}`,
-          `needsRag: ${String(entry.needsRag)}`,
-          `routeReason: ${entry.routeReason || "-"}`,
-          `queryIntent: ${entry.queryIntent || "-"}`,
-          `retrievalStage: ${entry.retrievalStage || "-"}`,
-          `matchedTerms: ${JSON.stringify(entry.matchedTerms || [])}`,
-          `sourceIds: ${JSON.stringify(entry.sourceIds || [])}`,
+          `nodeId: ${entry.nodeId || "-"} (scene ${entry.scene ?? "-"})`,
+          `intent: ${entry.intent || "-"}${entry.intentMethod ? ` (${entry.intentMethod})` : ""}`,
+          `deviation: ${entry.deviation || "-"}`,
           `userText: ${entry.userText || "-"}`,
           `normalizedUserText: ${entry.normalizedUserText || "-"}`,
           `transcriptRepairs: ${JSON.stringify(entry.transcriptRepairs || [])}`,
-          `latencyMs: ${entry.latencyMs || "-"}`,
-          `topHits: ${JSON.stringify(entry.topHits || [], null, 2)}`,
+          `latencyMs: ${entry.latencyMs ?? "-"}`,
           `answerPreview: ${entry.answerPreview || "-"}`,
           ""
         ].join("\n")
@@ -154,22 +130,22 @@ async function refreshRagLogs() {
   );
 }
 
-function startRagPolling() {
-  if (!ragLogEl || !manager.getSessionId()) {
+function startDialoguePolling() {
+  if (!dialogueLogEl || !manager.getSessionId()) {
     return;
   }
 
-  clearInterval(ragPollTimer);
-  ragPollTimer = setInterval(() => {
-    refreshRagLogs().catch((error) => {
-      log("RAG log refresh failed:", error.message);
+  clearInterval(dialoguePollTimer);
+  dialoguePollTimer = setInterval(() => {
+    refreshDialogueLogs().catch((error) => {
+      log("Dialogue log refresh failed:", error.message);
     });
   }, 2000);
 }
 
-function stopRagPolling() {
-  clearInterval(ragPollTimer);
-  ragPollTimer = null;
+function stopDialoguePolling() {
+  clearInterval(dialoguePollTimer);
+  dialoguePollTimer = null;
 }
 
 startBtn.addEventListener("click", async () => {
@@ -183,9 +159,9 @@ startBtn.addEventListener("click", async () => {
 
   try {
     await manager.start();
-    await refreshRagLogs();
-    startRagPolling();
-    log("Ready. Sandbox sessions are short, so expect disconnects around the one-minute mark.");
+    await refreshDialogueLogs();
+    startDialoguePolling();
+    log("接続完了。台本に沿って進行できます。");
   } catch (error) {
     log("Start failed:", describeSessionError(error));
     resetDebugUi();
@@ -194,8 +170,8 @@ startBtn.addEventListener("click", async () => {
 
 stopBtn.addEventListener("click", async () => {
   log("=== Stop session ===");
-  stopRagPolling();
-  setRagLogText("");
+  stopDialoguePolling();
+  setDialogueLogText("");
   await manager.stop();
   startBtn.disabled = false;
   stopBtn.disabled = true;

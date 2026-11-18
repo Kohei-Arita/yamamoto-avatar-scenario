@@ -1,23 +1,14 @@
-import env from "../../config/env.js";
+import { requireApplicationAccess } from "../access/access-control.js";
 import { getScenarioEngine } from "../scenario/scenario-engine.js";
 import { getDialogueLogs, getLatestBoundSessionId } from "../dialogue/dialogue-log.store.js";
 import { deliverOperatorSpeech } from "../dialogue/dialogue.service.js";
+import {
+  broadcastScenarioState,
+  countDialogueEventSubscribers
+} from "../dialogue/dialogue-events.js";
 
 export function requireOperatorToken(req, res, next) {
-  if (!env.operatorToken) {
-    return res.status(503).json({
-      ok: false,
-      error: "OPERATOR_TOKEN is not configured on the server"
-    });
-  }
-
-  const authHeader = req.headers.authorization || "";
-
-  if (authHeader !== `Bearer ${env.operatorToken}`) {
-    return res.status(401).json({ ok: false, error: "Unauthorized" });
-  }
-
-  return next();
+  return requireApplicationAccess(req, res, next);
 }
 
 function resolveSessionId(req) {
@@ -42,6 +33,7 @@ function buildStateResponse(sessionId, extra = {}) {
     ok: true,
     ...extra,
     state,
+    avatarConnected: countDialogueEventSubscribers(sessionId) > 0,
     logs: getDialogueLogs(sessionId).slice(-20)
   };
 }
@@ -60,6 +52,15 @@ function applyEngineAction(req, res, action, run) {
   const sessionId = resolveSessionId(req);
 
   try {
+    assertExpectedVersion(req, sessionId);
+    if (
+      getScenarioEngine().getInputState(sessionId).recoveryRequired &&
+      !["jump", "reset"].includes(action)
+    ) {
+      const error = new Error("サーバー再起動後は、ジャンプで中断位置を指定してください。");
+      error.status = 409;
+      throw error;
+    }
     const engineResult = run(getScenarioEngine(), sessionId);
     const delivery = deliverOperatorSpeech(sessionId, engineResult, { action });
 
@@ -76,6 +77,35 @@ function applyEngineAction(req, res, action, run) {
     return res.json(buildStateResponse(sessionId, { delivery }));
   } catch (error) {
     return sendOperatorError(res, action, error);
+  }
+}
+
+function assertExpectedVersion(req, sessionId) {
+  const expected = req.body?.expectedVersion;
+  const epoch = req.body?.expectedEpoch;
+  const current = getScenarioEngine().getInputState(sessionId);
+  if (
+    (epoch && epoch !== current.epoch) ||
+    (expected !== undefined && expected !== current.version)
+  ) {
+    const error = new Error("進行が更新されました。現在の状態を確認して操作してください。");
+    error.status = 409;
+    throw error;
+  }
+}
+
+export function postOperatorInput(req, res) {
+  const sessionId = resolveSessionId(req);
+  if (typeof req.body?.paused !== "boolean") {
+    return res.status(400).json({ ok: false, error: "paused must be a boolean" });
+  }
+  try {
+    assertExpectedVersion(req, sessionId);
+    const state = getScenarioEngine().setInputPaused(sessionId, req.body.paused);
+    broadcastScenarioState(sessionId, state);
+    return res.json(buildStateResponse(sessionId));
+  } catch (error) {
+    return sendOperatorError(res, "input", error);
   }
 }
 
@@ -115,6 +145,6 @@ export function postOperatorSay(req, res) {
   const { nodeId } = req.body || {};
 
   return applyEngineAction(req, res, "say", (engine, sessionId) =>
-    engine.getNodeLines(sessionId, nodeId || null)
+    engine.repeat(sessionId, nodeId || null)
   );
 }

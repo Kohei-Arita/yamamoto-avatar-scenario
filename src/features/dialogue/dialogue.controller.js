@@ -1,20 +1,19 @@
-import crypto from "node:crypto";
-import env from "../../config/env.js";
-import { createOpenAiCompatibleResponse } from "./adapters/openai-chat-response.js";
-import { getLastUserMessage } from "./chat-message.js";
-import { bindDebugSession, getDialogueLogs } from "./dialogue-log.store.js";
-import { subscribeDialogueEvents } from "./dialogue-events.js";
+import { appendDialogueLog, getDialogueLogs, bindDebugSession } from "./dialogue-log.store.js";
+import { broadcastScenarioState, subscribeDialogueEvents } from "./dialogue-events.js";
+import {
+  isAllowedDialogueSession,
+  isRegisteredSessionId,
+  registerKnownSessionId
+} from "./session-registry.js";
+import { SERVER_EPOCH } from "../scenario/scenario.store.js";
+import { writeSseEvent, setSseHeaders } from "../../shared/http/sse.js";
+import { getScenarioEngine } from "../scenario/scenario-engine.js";
 import {
   answerUserText,
   bindDialogueSession,
-  handleChatCompletion,
-  streamChatCompletion
+  streamScenarioReply,
+  toSpeechBatch
 } from "./dialogue.service.js";
-
-function writeSseEvent(res, event, payload) {
-  res.write(`event: ${event}\n`);
-  res.write(`data: ${JSON.stringify(payload)}\n\n`);
-}
 
 function toSpeechSegmentPayload(segment) {
   if (typeof segment === "string") {
@@ -26,27 +25,30 @@ function toSpeechSegmentPayload(segment) {
   }
 
   return {
+    speechId: segment?.speechId,
+    segmentIndex: segment?.segmentIndex,
+    segmentCount: segment?.segmentCount,
+    state: segment?.state,
     text: segment?.speechText || "",
     speechText: segment?.speechText || "",
     subtitleText: segment?.subtitleText || segment?.speechText || ""
   };
 }
 
-function setSseHeaders(res) {
-  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-  res.setHeader("Cache-Control", "no-cache, no-transform");
-  res.setHeader("Connection", "keep-alive");
-  res.setHeader("X-Accel-Buffering", "no");
-  res.flushHeaders?.();
-}
+// 起動直後も未知・未指定のsessionIdを拒否し、別セッションへの暗黙の操作を防ぐ。
+function rejectUnknownSession(req, res) {
+  const sessionId = req.body?.sessionId || req.query?.sessionId || null;
 
-function isAuthorized(req) {
-  if (!env.dialogueEndpointApiKey) {
-    return true;
+  if (isAllowedDialogueSession(sessionId)) {
+    return false;
   }
 
-  const authHeader = req.headers.authorization || "";
-  return authHeader === `Bearer ${env.dialogueEndpointApiKey}`;
+  console.warn(
+    "[dialogue] unknown_session_rejected",
+    JSON.stringify({ sessionId, path: req.path })
+  );
+  res.status(403).json({ ok: false, error: "Unknown session" });
+  return true;
 }
 
 export function postBindDialogueSession(req, res) {
@@ -56,11 +58,47 @@ export function postBindDialogueSession(req, res) {
     return res.status(400).json({ ok: false, error: "sessionId is required" });
   }
 
-  bindDebugSession(sessionId, { source: "browser_debug_ui" });
+  if (rejectUnknownSession(req, res)) {
+    return undefined;
+  }
+
   const session = bindDialogueSession(sessionId);
   console.log("[dialogue] bind_session", JSON.stringify({ sessionId }));
 
-  return res.json({ ok: true, sessionId, messageCount: session.messageCount });
+  return res.json({ ok: true, ...session });
+}
+
+// 有効な文字起こしがないまま受付上限に達した会場画面から、入力停止だけを受け付ける。
+export function postInputTimeout(req, res) {
+  const { sessionId, expectedVersion, expectedEpoch } = req.body || {};
+  if (
+    typeof sessionId !== "string" ||
+    !sessionId ||
+    !Number.isInteger(expectedVersion) ||
+    expectedVersion < 0
+  ) {
+    return res.status(400).json({ ok: false, error: "sessionId and expectedVersion are required" });
+  }
+  if (!isRegisteredSessionId(sessionId)) {
+    return res.status(403).json({ ok: false, error: "Unknown session" });
+  }
+  const engine = getScenarioEngine();
+  const current = engine.getInputState(sessionId);
+  if (current.version !== expectedVersion || (expectedEpoch && current.epoch !== expectedEpoch)) {
+    return res.status(409).json({ ok: false, error: "Scenario has changed", state: current });
+  }
+  if (!current.acceptsPatientInput) return res.json({ ok: true, state: current });
+
+  const state = engine.setInputPaused(sessionId, true);
+  appendDialogueLog({
+    sessionId,
+    kind: "input_timeout",
+    nodeId: state.nodeId,
+    reason: "no_transcript_within_30s"
+  });
+  broadcastScenarioState(sessionId, state);
+  console.log("[dialogue] input_timeout", JSON.stringify({ sessionId, nodeId: state.nodeId }));
+  return res.json({ ok: true, state });
 }
 
 export function getDialogueLogsController(req, res) {
@@ -72,11 +110,56 @@ export function getDialogueLogsController(req, res) {
   });
 }
 
+export function postPlaybackState(req, res) {
+  const { sessionId, status, message = "", sequence, expectedEpoch } = req.body || {};
+  if (rejectUnknownSession(req, res)) return;
+  if (
+    !["speaking", "idle", "error"].includes(status) ||
+    typeof message !== "string" ||
+    message.length > 500 ||
+    !Number.isSafeInteger(sequence) ||
+    sequence < 1 ||
+    typeof expectedEpoch !== "string"
+  ) {
+    return res.status(400).json({ ok: false, error: "Invalid playback status" });
+  }
+  const applied = getScenarioEngine().reportPlayback(sessionId, {
+    status,
+    message,
+    sequence,
+    expectedEpoch
+  });
+  if (applied && status === "error")
+    appendDialogueLog({ sessionId, kind: "playback_error", answerPreview: message });
+  return res.json({ ok: true, applied });
+}
+
 export function getDialogueEventsController(req, res) {
-  const { sessionId } = req.query;
+  const { sessionId, epoch } = req.query;
+  const engine = getScenarioEngine();
+  // 認証済みの会場画面が旧プロセスから再接続した場合。勝手に冒頭を読まず操作待ちにする。
+  if (
+    !isRegisteredSessionId(sessionId) &&
+    typeof epoch === "string" &&
+    epoch.length > 0 &&
+    epoch.length <= 128 &&
+    epoch !== SERVER_EPOCH
+  ) {
+    registerKnownSessionId(sessionId);
+    if (isRegisteredSessionId(sessionId)) {
+      engine.requireRecovery(sessionId);
+      bindDebugSession(sessionId, { source: "server-recovery" });
+    }
+  }
+  if (rejectUnknownSession(req, res)) return;
 
   setSseHeaders(res);
-  subscribeDialogueEvents(sessionId, res);
+  subscribeDialogueEvents(
+    sessionId,
+    res,
+    engine.getInputState(sessionId),
+    toSpeechBatch(engine.getNodeLines(sessionId).lines.join("\n"), engine.getInputState(sessionId))
+  );
   console.log("[dialogue] events_subscribed", JSON.stringify({ sessionId: sessionId || null }));
 }
 
@@ -85,6 +168,10 @@ export async function postRespondWithDialogue(req, res) {
 
   if (!text || typeof text !== "string") {
     return res.status(400).json({ ok: false, error: "text is required" });
+  }
+
+  if (rejectUnknownSession(req, res)) {
+    return undefined;
   }
 
   try {
@@ -121,10 +208,14 @@ export async function postRespondWithDialogue(req, res) {
 }
 
 export async function postRespondWithDialogueStream(req, res) {
-  const { sessionId, text } = req.body || {};
+  const { sessionId, text, revision, expectedVersion, expectedEpoch } = req.body || {};
 
   if (!text || typeof text !== "string") {
     return res.status(400).json({ ok: false, error: "text is required" });
+  }
+
+  if (rejectUnknownSession(req, res)) {
+    return undefined;
   }
 
   const abortController = new AbortController();
@@ -142,14 +233,18 @@ export async function postRespondWithDialogueStream(req, res) {
       "[dialogue] respond_stream_request",
       JSON.stringify({
         sessionId: sessionId || null,
+        revision: Boolean(revision),
         userTextPreview: text.slice(0, 120)
       })
     );
 
-    const result = await streamChatCompletion(
+    const result = await streamScenarioReply(
       {
-        messages: [{ role: "user", content: text }],
-        metadata: sessionId ? { sessionId } : {}
+        text,
+        sessionId: sessionId || null,
+        revision: Boolean(revision),
+        expectedVersion,
+        expectedEpoch
       },
       {
         signal: abortController.signal,
@@ -175,7 +270,8 @@ export async function postRespondWithDialogueStream(req, res) {
       writeSseEvent(res, "done", {
         ok: true,
         content: result.content,
-        speechContent: result.speechContent
+        speechContent: result.speechContent,
+        state: result.engineResult.state
       });
     }
 
@@ -202,73 +298,5 @@ export async function postRespondWithDialogueStream(req, res) {
     });
     res.end();
     return undefined;
-  }
-}
-
-export async function postChatCompletions(req, res) {
-  if (!isAuthorized(req)) {
-    console.warn(
-      "[dialogue] chat_completion_unauthorized",
-      JSON.stringify({
-        authPresent: Boolean(req.headers.authorization),
-        sessionId: req.body?.metadata?.sessionId || null
-      })
-    );
-
-    return res.status(401).json({
-      error: {
-        message: "Unauthorized",
-        type: "invalid_request_error"
-      }
-    });
-  }
-
-  try {
-    const messages = Array.isArray(req.body?.messages) ? req.body.messages : [];
-    const userText = getLastUserMessage(messages);
-
-    console.log(
-      "[dialogue] chat_completion_request",
-      JSON.stringify({
-        sessionId: req.body?.metadata?.sessionId || null,
-        messageCount: messages.length,
-        userTextPreview: userText.slice(0, 120)
-      })
-    );
-
-    const result = await handleChatCompletion(req.body);
-
-    return res.json(
-      createOpenAiCompatibleResponse({
-        model: env.openAiModel,
-        content: result.content
-      })
-    );
-  } catch (error) {
-    console.error(
-      "[dialogue] chat_completion_error",
-      JSON.stringify({
-        sessionId: req.body?.metadata?.sessionId || null,
-        message: error.message,
-        details: error.details || null
-      })
-    );
-
-    return res.status(500).json({
-      id: `chatcmpl-${crypto.randomUUID()}`,
-      object: "chat.completion",
-      created: Math.floor(Date.now() / 1000),
-      model: env.openAiModel,
-      choices: [
-        {
-          index: 0,
-          message: {
-            role: "assistant",
-            content: "内部エラーが発生しました。もう一度お願いします。"
-          },
-          finish_reason: "stop"
-        }
-      ]
-    });
   }
 }

@@ -1,5 +1,5 @@
 import { clearChromaKeyCanvas, setupChromaKey } from "./liveavatar-chroma-key.js";
-import { normalizeSubtitleText } from "./liveavatar-subtitles.js";
+export { createSessionStartLock } from "./session-start-lock.js";
 
 export function describeSessionError(error, { defaultMessage = "Unknown error" } = {}) {
   if (!error) {
@@ -19,147 +19,6 @@ export function describeSessionError(error, { defaultMessage = "Unknown error" }
   }
 
   return error.message || defaultMessage;
-}
-
-function createTabId() {
-  return globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
-}
-
-export function createSessionStartLock({
-  storageKey = "liveavatar-session-start-lock",
-  ttlMs = 15 * 60 * 1000,
-  storage = window.localStorage,
-  tabId = createTabId()
-} = {}) {
-  function readLock() {
-    try {
-      const raw = storage.getItem(storageKey);
-      const parsed = raw ? JSON.parse(raw) : null;
-
-      if (
-        !parsed ||
-        typeof parsed !== "object" ||
-        typeof parsed.tabId !== "string" ||
-        !Number.isFinite(parsed.expiresAt)
-      ) {
-        if (raw) {
-          storage.removeItem(storageKey);
-        }
-
-        return null;
-      }
-
-      return parsed;
-    } catch {
-      storage.removeItem(storageKey);
-      return null;
-    }
-  }
-
-  function clearExpiredLock() {
-    const existingLock = readLock();
-
-    if (!existingLock || existingLock.expiresAt > Date.now()) {
-      return existingLock;
-    }
-
-    storage.removeItem(storageKey);
-    return null;
-  }
-
-  return {
-    acquire() {
-      const existingLock = clearExpiredLock();
-
-      if (existingLock && existingLock.tabId !== tabId) {
-        return false;
-      }
-
-      storage.setItem(
-        storageKey,
-        JSON.stringify({
-          tabId,
-          expiresAt: Date.now() + ttlMs
-        })
-      );
-
-      return true;
-    },
-    refresh() {
-      const existingLock = clearExpiredLock();
-
-      if (!existingLock || existingLock.tabId !== tabId) {
-        return false;
-      }
-
-      storage.setItem(
-        storageKey,
-        JSON.stringify({
-          tabId,
-          expiresAt: Date.now() + ttlMs
-        })
-      );
-
-      return true;
-    },
-    release() {
-      const existingLock = readLock();
-
-      if (existingLock?.tabId === tabId) {
-        storage.removeItem(storageKey);
-      }
-    }
-  };
-}
-
-export function createSubtitleController({
-  subtitleBox,
-  showSubtitles = true,
-  hideDelayMs = 1200
-} = {}) {
-  let clearTimer = null;
-
-  function set(text) {
-    clearTimeout(clearTimer);
-
-    const normalizedText = normalizeSubtitleText(text);
-
-    if (!subtitleBox || !showSubtitles || !normalizedText) {
-      subtitleBox?.classList.add("hidden");
-
-      if (subtitleBox) {
-        subtitleBox.textContent = "";
-      }
-
-      return;
-    }
-
-    subtitleBox.textContent = normalizedText;
-    subtitleBox.classList.remove("hidden");
-  }
-
-  function clearSoon() {
-    clearTimeout(clearTimer);
-    clearTimer = setTimeout(() => {
-      set("");
-    }, hideDelayMs);
-  }
-
-  function clearNow() {
-    clearTimeout(clearTimer);
-    set("");
-  }
-
-  function dispose() {
-    clearTimeout(clearTimer);
-  }
-
-  return {
-    set,
-    clearSoon,
-    clearNow,
-    dispose
-  };
 }
 
 export function createChromaKeyController({
@@ -216,7 +75,7 @@ export function createChromaKeyController({
 
 export function attachTrackToMediaElements(
   track,
-  { Track, remoteVideo, remoteAudio, videoPlaceholder } = {}
+  { Track, remoteVideo, remoteAudio, videoPlaceholder, onAudioBlocked = () => {} } = {}
 ) {
   if (track.kind === Track.Kind.Video) {
     track.attach(remoteVideo);
@@ -227,6 +86,12 @@ export function attachTrackToMediaElements(
 
   if (track.kind === Track.Kind.Audio) {
     track.attach(remoteAudio);
+
+    // autostart時などユーザー操作なしで開始した場合、ブラウザの自動再生制限で
+    // 音声がブロックされることがある。検知して呼び出し元に通知する(タップで解除)。
+    remoteAudio.play()?.catch?.((error) => {
+      onAudioBlocked(error);
+    });
     return "audio";
   }
 

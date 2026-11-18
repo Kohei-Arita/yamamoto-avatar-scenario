@@ -1,3 +1,5 @@
+import { applyScriptReadings } from "./script-readings.js";
+
 const PHRASE_REPLACEMENTS = [
   // --- シナリオ固有語（haigan-2026。複合語を先に） ---
   [/UIPパターン/gu, "ユーアイピーパターン"],
@@ -235,7 +237,7 @@ const TOKEN_REPLACEMENTS = [
 ];
 
 export function normalizeSpeechPronunciation(text = "") {
-  let normalized = String(text || "");
+  let normalized = applyScriptReadings(text);
 
   for (const [pattern, replacement] of PHRASE_REPLACEMENTS) {
     normalized = normalized.replace(pattern, replacement);

@@ -10,6 +10,36 @@ function normalizeForMatching(text = "") {
     .trim();
 }
 
+// 症状なしの定型返答は文全体で照合し、「眠れない」の部分一致を避ける。
+// 疑問符は残し、疑問文を断定の返答として受理しない。
+function normalizeExactPhrase(text) {
+  return normalizeForMatching(text)
+    .replace(/[\s、,]/gu, "")
+    .replace(/[。.!！]+$/u, "");
+}
+
+const NEGATION = /ない|なく|ありません|ません|なし|無い|不要|違います/u;
+// 症状の否定ではなく「症状が続く」意味や二重否定は、ルールで反転させず分類器へ。
+const COMPLEX_NEGATION =
+  /止ま(?:らない|りません)|治(?:らない|りません)|(?:下が|減|良くな|よくな)(?:らない|りません)|ないわけ|ないとは|なくは|ないこと|なくない|ませんか|ないですか|ではなく|じゃなく/u;
+const CLAUSE_BOUNDARY =
+  /[、,。！？!?\n]|けれども?|けど|ですが|ただ(?:し)?|しかし|でも|(?<=ない|ません|です|ます)が/u;
+
+function hasAffirmedKeyword(text, keyword) {
+  // 「咳も痰もありません」のような列挙全体への否定も見る。
+  // 否定語自体が選択肢のキーワードなら、その一致は保持する。
+  const word = normalizeForMatching(keyword);
+  if (!word) return false;
+  return text.split(CLAUSE_BOUNDARY).some((clause) => {
+    let index = clause.indexOf(word);
+    while (index >= 0) {
+      if (NEGATION.test(word) || !NEGATION.test(clause.slice(index + word.length))) return true;
+      index = clause.indexOf(word, index + word.length);
+    }
+    return false;
+  });
+}
+
 export function matchIntentByRules(text, intentAdvances = []) {
   const normalized = normalizeForMatching(text);
 
@@ -17,27 +47,28 @@ export function matchIntentByRules(text, intentAdvances = []) {
     return null;
   }
 
-  let best = null;
+  const candidates = [];
 
-  for (const [index, advance] of intentAdvances.entries()) {
+  for (const advance of intentAdvances) {
     const keywords = Array.isArray(advance.keywords) ? advance.keywords : [];
     const matchedKeywords = keywords.filter((keyword) =>
-      normalized.includes(normalizeForMatching(keyword))
+      advance.matchMode === "exact"
+        ? normalizeExactPhrase(normalized) === normalizeExactPhrase(keyword)
+        : !COMPLEX_NEGATION.test(normalized) && hasAffirmedKeyword(normalized, keyword)
     );
 
     if (matchedKeywords.length === 0) {
       continue;
     }
 
-    // 同点なら定義順の早いadvanceを優先する
-    if (!best || matchedKeywords.length > best.matchedKeywords.length) {
-      best = { advance, matchedKeywords, index };
-    }
+    candidates.push({ advance, matchedKeywords });
   }
 
-  if (!best) {
+  // 複数の意図を含む言い直しは単語の個数で決めず、文全体の分類へ回す。
+  if (candidates.length !== 1) {
     return null;
   }
+  const [best] = candidates;
 
   return {
     intent: best.advance.intent,
@@ -78,6 +109,8 @@ export function buildIntentClassificationMessages(text, intentAdvances, { doctor
         "あなたは模擬診療シナリオの進行を助ける発話分類器です。",
         "役割は、患者の発話が以下の選択肢のどれに最も近いかを判定することだけです。",
         "回答文の生成は禁止です。医学的な助言も禁止です。",
+        "単語の一致より文全体の意味を優先し、否定・訂正・逆接の後の内容を考慮してください。",
+        "否定された行動を実行の合図と解釈しないでください。保留・中止の希望はOFF_SCRIPTです。",
         `どの選択肢にも当てはまらない場合は "${OFF_SCRIPT}" と答えてください。`,
         '出力は JSON のみとし、形式は {"intent":"..."} に厳密に従ってください。'
       ].join("\n")

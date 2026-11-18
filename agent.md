@@ -11,7 +11,7 @@ README を置き換えるものではありません。ここには、毎回守�
 
 ## このプロジェクトの前提
 
-- Node.js 20 / ESM の Express アプリです
+- Node.js 22.13以降 / ESM の Express アプリです
 - 主な体験は `HeyGen LiveAvatar + LiveKit + シナリオ状態機械` です
 - 現在の標準経路は `LIVEAVATAR_SELF_CONTROLLED=true` を前提にした self-controlled 構成です
 - ブラウザは表示だけでなく、transcription の集約、対話API呼び出し、avatar への speak 制御も担います
@@ -45,7 +45,8 @@ README を置き換えるものではありません。ここには、毎回守�
 ### 1. 標準経路を壊さない
 
 - まず守るべき主経路は `browser -> /api/liveavatar/* -> LiveKit -> /api/dialogue/respond/stream -> avatar.speak_text` です
-- built-in 会話や custom LLM 用のコードは残っていますが、現在の標準構成ではありません
+- RAG 経路（`/api/rag/*` alias・`/v1/chat/completions`・custom LLM provisioning scripts）は撤去済みです。復活させない
+- 標準経路は `LIVEAVATAR_SELF_CONTROLLED=true` のみです。false にすると HeyGen 内蔵 LLM が台本外の医学的回答を自由に生成するため、本番では使わない
 - 変更時は self-controlled 構成が引き続き成立するかを優先して確認してください
 
 ### 2. README と実装をずらさない
@@ -61,17 +62,31 @@ README を置き換えるものではありません。ここには、毎回守�
 
 ### 3. 医療デモとしての制約を意識する
 
-- 回答生成は `data/processed/lung-cancer-guideline-hybrid.jsonl` を根拠にする前提です
-- 検索やプロンプトを変える場合は、「なぜその断片が選ばれたか」を追いやすい性質を落とさない
-- 一般知識で自由に補完する方向より、取得断片ベースの説明を優先する
+- 基本動作は「ユーザーの有効な発話 → 一区切りの確認 → 現在の台本で決まった応答」です。自由会話への拡張や、発話途中での進行に変えない。開始挨拶・auto遷移・operator操作と30秒上限は既定の条件を維持する
+- 本番の発話は `data/scenarios/*.json` の台詞と逸脱ハンドリングの定型文に限る。`SCENARIO_SPEECH_MODE=fixed` が必須で、ユーザーの言い回しに応じて回答文を作り替えない
+- 本番のLLMは intent分類・ASR補正の補助にのみ使い、自由回答は生成させない。既存の `paraphrase` は非本番の検証用であり、本番に適用しない
+- シナリオ外の応答を追加する場合は、逸脱ハンドリング(deviation-handler)の定型文として扱う
 
-### 4. フロントとサーバーの境界を崩しすぎない
+### 4. 本番向けの保護機構を外さない
+
+本番のトラブル（台本が飛ぶ・音声が出ない）を受けて入れた防御です。一見冗長に見えても消さないこと。
+
+- **非発話フィルタ**（`public/transcript-filter.js` / `src/features/scenario/utterance-filter.js`）: ASRの句読点だけ・一音だけの断片を除外。これを外すと `patient_any` ノードが素通しされて台本が飛ぶ
+- **エコーガード**（`public/transcript-echo-guard.js`）: スピーカー回り込みをアバター自身の発話と照合して無視
+- **ユーザー発話の区切り**（`public/user-turn-detector.js`）: LiveAvatarとLiveKitの両方の発話状態を使い、文字起こしだけのデバウンスへ戻さない。受付は最初の検出から30秒固定で、聞き取りなしなら操作係の再開待ちにする
+- **発話ウォッチドッグ / 再送**（`liveavatar-self-controller.js`）: 開始通知未着は一度再送する。開始・終了を確認できなければ入力を閉じて操作係へ通知し、未発話の台詞を推測で飛ばさない
+- **起動処理の世代管理**（`liveavatar-session-manager.js`）: Start 中の Stop 割り込みで sessionId が失われないようにしている
+- ブラウザ側とサーバー側で二重に防いでいる箇所は、**両方**残すこと（片方の実装を「重複」として消さない）
+
+判定ロジックを触る場合は、「はい」「うん」などの正規の短答が通ることをテストで担保してください。
+
+### 5. フロントとサーバーの境界を崩しすぎない
 
 - ブラウザ側の会話制御は `public/` にあります
 - LiveAvatar API 呼び出しやシナリオエンジン本体は `src/features/` にあります
 - 変更時は、責務がどちらにあるべきかを確認してから実装する
 
-### 5. 秘密情報を増やさない
+### 6. 秘密情報を増やさない
 
 - API キーや機微情報をコード、README、サンプル値に直書きしない
 - `.env.example` には共有してよい例だけを書く
@@ -87,6 +102,7 @@ README を置き換えるものではありません。ここには、毎回守�
 ## 完了前チェック
 
 - `npm test` が通るか、少なくとも変更箇所に関係するテストを実行したか
+- Markdown を編集したなら `npm run format` を実行したか（prettier がテーブル幅を整形するため、整形前の文字列を狙った差分は当たらないことがある）
 - 画面挙動を変えたなら `/xgate` を確認したか
 - API や SSE を変えたなら、ブラウザ側とサーバー側の両方を確認したか
 - 環境変数や運用を変えたなら `README.md` と `.env.example` を更新したか

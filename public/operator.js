@@ -8,6 +8,8 @@ const statePatient = document.getElementById("statePatient");
 const stateIntent = document.getElementById("stateIntent");
 const stateLines = document.getElementById("stateLines");
 const branchButtons = document.getElementById("branchButtons");
+const imagingControls = document.getElementById("imagingControls");
+const startImagingBtn = document.getElementById("startImagingBtn");
 const nextBtn = document.getElementById("nextBtn");
 const sayBtn = document.getElementById("sayBtn");
 const resetBtn = document.getElementById("resetBtn");
@@ -15,13 +17,32 @@ const jumpSelect = document.getElementById("jumpSelect");
 const jumpBtn = document.getElementById("jumpBtn");
 const actionResult = document.getElementById("actionResult");
 const logList = document.getElementById("logList");
+const inputBtn = document.getElementById("inputBtn");
+const stateInput = document.getElementById("stateInput");
+const stateConnection = document.getElementById("stateConnection");
 
 const POLL_INTERVAL_MS = 1500;
-const BRANCH_LABELS = { A: "A", B: "B", C: "C" };
+const BRANCH_LABELS = { A: "A", B: "B", C: "C", D: "D" };
+const IMAGING_BRANCH = "present_imaging";
 
 let token = sessionStorage.getItem("operatorToken") || "";
 let pollTimer = null;
 let knownNodeIds = [];
+let currentState = null;
+let actionBusy = false;
+let refreshBusy = false;
+
+function updateActionButtons() {
+  document
+    .querySelectorAll(".operator-actions button, .operator-branches button, #jumpBtn")
+    .forEach((button) => {
+      button.disabled = actionBusy || !currentState;
+      if (currentState?.recoveryRequired && button !== jumpBtn && button !== resetBtn)
+        button.disabled = true;
+      if (button === startImagingBtn && imagingControls.hidden) button.disabled = true;
+    });
+}
+updateActionButtons();
 
 function authHeaders(extra = {}) {
   return {
@@ -32,6 +53,7 @@ function authHeaders(extra = {}) {
 
 async function api(path, { method = "GET", body } = {}) {
   const response = await fetch(path, {
+    signal: AbortSignal.timeout(8000),
     method,
     headers: authHeaders(body !== undefined ? { "content-type": "application/json" } : {}),
     body: body !== undefined ? JSON.stringify(body) : undefined
@@ -39,11 +61,13 @@ async function api(path, { method = "GET", body } = {}) {
   const data = await response.json().catch(() => ({}));
 
   if (response.status === 401) {
-    throw new Error("認証エラー: トークンが正しくありません");
+    throw Object.assign(new Error("認証エラー: トークンが正しくありません"), { status: 401 });
   }
 
   if (response.status === 503) {
-    throw new Error("サーバーに OPERATOR_TOKEN が設定されていません");
+    throw Object.assign(new Error("サーバーに OPERATOR_TOKEN が設定されていません"), {
+      status: 503
+    });
   }
 
   if (!response.ok || data?.ok === false) {
@@ -60,8 +84,11 @@ function describeBranch(branch) {
 
 function renderBranches(state) {
   branchButtons.innerHTML = "";
+  const branches = state.awaitingBranches || [];
+  imagingControls.hidden = !branches.some((entry) => entry.branch === IMAGING_BRANCH);
+  const votingBranches = branches.filter((entry) => entry.branch !== IMAGING_BRANCH);
 
-  if (!state.awaitingBranches || state.awaitingBranches.length === 0) {
+  if (votingBranches.length === 0) {
     const empty = document.createElement("p");
     empty.className = "operator-muted";
     empty.textContent = state.isTerminal
@@ -71,12 +98,20 @@ function renderBranches(state) {
     return;
   }
 
-  for (const entry of state.awaitingBranches) {
+  for (const entry of votingBranches) {
     const button = document.createElement("button");
     button.textContent = `${describeBranch(entry.branch)} → ${entry.next}`;
     button.addEventListener("click", () => runAction("branch", { branch: entry.branch }));
     branchButtons.appendChild(button);
   }
+}
+
+function escapeHtml(value) {
+  return String(value || "").replace(
+    /[&<>"']/g,
+    (char) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char] || char
+  );
 }
 
 function renderLogs(logs = []) {
@@ -87,12 +122,18 @@ function renderLogs(logs = []) {
     entry.className = "operator-log-entry";
     const time = String(log.timestamp || "").slice(11, 19);
     const deviation = log.deviation
-      ? ` <span class="deviation">[逸脱:${log.deviation}]</span>`
+      ? ` <span class="deviation">[逸脱:${escapeHtml(log.deviation)}]</span>`
       : "";
-    const intent = log.intent ? ` intent=${log.intent}(${log.intentMethod || "?"})` : "";
-    const patient = log.userText ? `<div>患者: ${log.userText}</div>` : "";
+    const intent = log.intent
+      ? ` intent=${escapeHtml(log.intent)}(${escapeHtml(log.intentMethod || "?")})`
+      : "";
+    const patient = log.userText ? `<div>患者: ${escapeHtml(log.userText)}</div>` : "";
+    const result =
+      log.kind === "input_timeout"
+        ? "<div>30秒以内に聞き取れる内容がなく、音声入力を停止しました。入力を再開して同じ質問から続けられます。</div>"
+        : `<div>山本: ${escapeHtml(log.answerPreview || "")}</div>`;
 
-    entry.innerHTML = `<div class="meta">${time} ${log.kind || ""} node=${log.nodeId || "-"}${intent}${deviation}</div>${patient}<div>山本: ${log.answerPreview || ""}</div>`;
+    entry.innerHTML = `<div class="meta">${time} ${escapeHtml(log.kind || "")} node=${escapeHtml(log.nodeId || "-")}${intent}${deviation}</div>${patient}${result}`;
     logList.appendChild(entry);
   }
 }
@@ -115,6 +156,30 @@ function renderJumpOptions(nodeIds) {
 
 function renderState(data) {
   const state = data.state || {};
+  if (
+    state.sessionId === currentState?.sessionId &&
+    state.epoch === currentState.epoch &&
+    state.version < currentState.version
+  )
+    return;
+  currentState = state;
+  stateConnection.textContent = data.avatarConnected ? "接続中" : "未接続（台詞を送信できません）";
+  const playback = state.playback;
+  if (playback?.status === "error")
+    stateConnection.textContent += ` / 音声エラー: ${playback.message}`;
+  else if (playback?.status === "speaking") stateConnection.textContent += " / 発話開始通知あり";
+  else if (playback?.status === "idle")
+    stateConnection.textContent += " / 発話終了通知あり（実音は要確認）";
+  stateInput.textContent = state.recoveryRequired
+    ? "サーバー再起動：ジャンプで中断位置を指定してください"
+    : state.inputPaused
+      ? "停止中（操作係の再開待ち）"
+      : state.acceptsPatientInput
+        ? "患者の返答を受付（アバター発話中はミュート）"
+        : state.awaitingBranches?.some((entry) => entry.branch === IMAGING_BRANCH)
+          ? "自動停止中（画像説明の開始待ち）"
+          : "自動停止中（Voting待機・終了）";
+  inputBtn.textContent = state.inputPaused ? "音声入力を再開" : "音声入力を停止";
   const logs = data.logs || [];
 
   stateSession.textContent = state.sessionId || "-";
@@ -138,16 +203,21 @@ function renderState(data) {
   renderLogs(logs);
 
   renderJumpOptions(state.allNodeIds || []);
+  updateActionButtons();
 }
 
 async function refresh() {
+  if (actionBusy || refreshBusy) return;
+  refreshBusy = true;
   try {
     const data = await api("/api/operator/state");
     authState.textContent = "接続中";
     renderState(data);
   } catch (error) {
-    authState.textContent = error.message;
-    stopPolling();
+    authState.textContent = `再接続待ち: ${error.message}`;
+    if (error.status === 401 || error.status === 503) stopPolling();
+  } finally {
+    refreshBusy = false;
   }
 }
 
@@ -165,19 +235,43 @@ function stopPolling() {
 }
 
 async function runAction(action, body = {}) {
+  if (actionBusy || !currentState) return;
+  actionBusy = true;
+  updateActionButtons();
   try {
     actionResult.textContent = "実行中...";
     const path = `/api/operator/${action}`;
-    const data = await api(path, { method: "POST", body });
+    const data = await api(path, {
+      method: "POST",
+      body: {
+        ...body,
+        sessionId: currentState.sessionId,
+        expectedVersion: currentState.version,
+        expectedEpoch: currentState.epoch
+      }
+    });
     const delivery = data.delivery || {};
-    actionResult.textContent = delivery.delivered
-      ? `送信しました（${delivery.segmentCount}セグメント）`
-      : "状態は更新しましたが、接続中のアバター画面がありません";
+    actionResult.textContent =
+      action === "input"
+        ? data.state.inputPaused
+          ? "音声入力を停止しました"
+          : "音声入力を再開しました"
+        : delivery.delivered
+          ? `送信しました（${delivery.segmentCount}セグメント）`
+          : "状態は更新しましたが、接続中のアバター画面がありません";
     renderState(data);
   } catch (error) {
     actionResult.textContent = `エラー: ${error.message}`;
+  } finally {
+    actionBusy = false;
+    updateActionButtons();
+    refresh();
   }
 }
+
+inputBtn.addEventListener("click", () =>
+  runAction("input", { paused: !currentState?.inputPaused })
+);
 
 connectBtn.addEventListener("click", () => {
   token = tokenInput.value.trim();
@@ -192,6 +286,7 @@ connectBtn.addEventListener("click", () => {
 });
 
 nextBtn.addEventListener("click", () => runAction("next"));
+startImagingBtn.addEventListener("click", () => runAction("branch", { branch: IMAGING_BRANCH }));
 sayBtn.addEventListener("click", () => runAction("say"));
 resetBtn.addEventListener("click", () => {
   if (window.confirm("シナリオを先頭に戻します。よろしいですか？")) {

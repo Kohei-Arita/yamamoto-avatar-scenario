@@ -34,6 +34,7 @@ export async function requestLiveAvatar(
   { method = "GET", body, sessionToken, errorMessage = `LiveAvatar request failed: ${path}` } = {}
 ) {
   const result = await fetchJson(`${LIVEAVATAR_API_BASE_URL}${path}`, {
+    signal: AbortSignal.timeout(20_000),
     method,
     headers: buildHeaders({
       sessionToken,

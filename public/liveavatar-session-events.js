@@ -1,55 +1,27 @@
 import { createSelfControlledConversation } from "./liveavatar-self-controller.js";
-import { extractAvatarSubtitleText, isAvatarSubtitleEndEvent } from "./liveavatar-subtitles.js";
+import { createSpeechBatchBuffer } from "./speech-batch.js";
 
 const AGENT_RESPONSE_TOPIC = "agent-response";
 
 export function createLiveAvatarDataHandler({
   getSelfControlledConversation = () => null,
-  isSelfControlled = () => false,
-  subtitleController,
   onUserTranscription = () => {},
-  onAvatarSubtitle = () => {},
   onSessionStopped = () => {}
 } = {}) {
   const decoder = new TextDecoder();
 
   return function handleDataReceived(payload, participant, kind, topic) {
+    if (topic !== AGENT_RESPONSE_TOPIC) return;
+    let event;
     try {
-      const event = JSON.parse(decoder.decode(payload));
-
-      if (topic !== AGENT_RESPONSE_TOPIC) {
-        return;
-      }
-
-      const selfControlled = isSelfControlled();
-
-      if (selfControlled) {
-        getSelfControlledConversation()?.handleAgentResponseEvent(event);
-      }
-
-      if (event.event_type === "user.transcription" && event.text) {
-        onUserTranscription(event.text);
-      }
-
-      if (!selfControlled) {
-        const subtitleText = extractAvatarSubtitleText(event);
-
-        if (subtitleText) {
-          subtitleController?.set(subtitleText);
-          onAvatarSubtitle(subtitleText);
-        }
-
-        if (isAvatarSubtitleEndEvent(event)) {
-          subtitleController?.clearSoon();
-        }
-      }
-
-      if (event.event_type === "session.stopped") {
-        onSessionStopped(event);
-      }
+      event = JSON.parse(decoder.decode(payload));
     } catch {
-      // Ignore non-JSON or unexpected data payloads.
+      return; // データチャンネル上のJSON以外のメッセージ。
     }
+    if (!event || typeof event !== "object") return;
+    getSelfControlledConversation()?.handleAgentResponseEvent(event);
+    if (event.event_type === "user.transcription" && event.text) onUserTranscription(event.text);
+    if (event.event_type === "session.stopped") onSessionStopped(event);
   };
 }
 
@@ -57,11 +29,14 @@ export function createSelfControlledSession({
   getRoom,
   getSessionId,
   liveAvatarConfig,
-  respondWithRagStream,
-  subtitleController,
+  respondWithDialogueStream,
   onLog = () => {},
   onAnswer = () => {},
-  onError = () => {}
+  onError = () => {},
+  onInputTimeout = async () => {},
+  onPlaybackState = () => {},
+  onMicStateChange = () => {},
+  microphoneInitiallyMuted = false
 } = {}) {
   if (!liveAvatarConfig?.selfControlled) {
     return null;
@@ -72,44 +47,52 @@ export function createSelfControlledSession({
     getSessionId,
     debounceMs: liveAvatarConfig.transcriptDebounceMs || 1200,
     continuationWindowMs: liveAvatarConfig.transcriptContinuationMs || 1800,
-    respondToTextStream: ({ sessionId, text, signal, onSpeechSegment }) =>
-      respondWithRagStream(sessionId, text, {
+    allowInterrupt: liveAvatarConfig.allowInterrupt !== false,
+    onMicStateChange,
+    onInputTimeout,
+    microphoneInitiallyMuted,
+    respondToTextStream: async ({
+      sessionId,
+      text,
+      revision,
+      expectedVersion,
+      expectedEpoch,
+      signal,
+      onSpeechSegment
+    }) => {
+      const buffer = createSpeechBatchBuffer();
+      const result = await respondWithDialogueStream(sessionId, text, {
         signal,
+        revision,
+        expectedVersion,
+        expectedEpoch,
         onEvent: async (event) => {
           if (event.type === "speech_segment" && (event.data?.speechText || event.data?.text)) {
-            await onSpeechSegment({
+            const batch = buffer.add({
+              speechId: event.data.speechId,
+              segmentIndex: event.data.segmentIndex,
+              segmentCount: event.data.segmentCount,
+              state: event.data.state,
               speechText: event.data?.speechText || event.data?.text || "",
               subtitleText:
                 event.data?.subtitleText || event.data?.speechText || event.data?.text || ""
             });
+            if (batch) for (const segment of batch) await onSpeechSegment(segment);
           }
         }
-      }),
+      });
+      if (buffer.incomplete)
+        throw new Error("台詞を最後まで受信できませんでした。操作画面から再発話してください。");
+      return result;
+    },
     onLog,
     onAnswer,
-    onSpeechStart: (text) => {
-      subtitleController?.set(text);
+    onSpeechStart: () => {
+      onPlaybackState("speaking");
     },
     onSpeechIdle: () => {
-      subtitleController?.clearSoon();
-    },
-    onSpeechReset: () => {
-      subtitleController?.clearNow();
+      onPlaybackState("idle");
     },
     onError
   });
-}
-
-export async function startOpeningGreeting(liveAvatarConfig, selfControlledConversation) {
-  if (!liveAvatarConfig?.selfControlled) {
-    return;
-  }
-
-  const openingGreeting = String(liveAvatarConfig.openingGreeting || "").trim();
-
-  if (!openingGreeting) {
-    return;
-  }
-
-  await selfControlledConversation?.speakText(openingGreeting);
 }

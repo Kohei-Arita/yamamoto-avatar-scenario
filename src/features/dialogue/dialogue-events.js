@@ -1,12 +1,9 @@
+import { writeSseEvent } from "../../shared/http/sse.js";
+
 const subscribersBySession = new Map();
 const HEARTBEAT_INTERVAL_MS = 25_000;
 
-function writeSseEvent(res, event, payload) {
-  res.write(`event: ${event}\n`);
-  res.write(`data: ${JSON.stringify(payload)}\n\n`);
-}
-
-export function subscribeDialogueEvents(sessionId, res) {
+export function subscribeDialogueEvents(sessionId, res, state, openingSegments = []) {
   const key = sessionId || "unbound-session";
 
   if (!subscribersBySession.has(key)) {
@@ -29,10 +26,10 @@ export function subscribeDialogueEvents(sessionId, res) {
     }
   });
 
-  writeSseEvent(res, "connected", { ok: true, sessionId: key });
+  writeSseEvent(res, "connected", { ok: true, sessionId: key, state, openingSegments });
 }
 
-export function broadcastSpeechSegments(sessionId, segments = []) {
+export function broadcastSpeechSegments(sessionId, segments = [], state) {
   const key = sessionId || "unbound-session";
   const subscribers = subscribersBySession.get(key);
 
@@ -41,8 +38,16 @@ export function broadcastSpeechSegments(sessionId, segments = []) {
   }
 
   for (const res of subscribers) {
-    for (const segment of segments) {
+    if (segments.length === 0) {
+      writeSseEvent(res, "scenario_state", { state, replace: true });
+    }
+    for (const [index, segment] of segments.entries()) {
       writeSseEvent(res, "speech_segment", {
+        speechId: segment.speechId,
+        segmentIndex: segment.segmentIndex,
+        segmentCount: segment.segmentCount,
+        state,
+        replace: index === 0,
         text: segment.speechText || "",
         speechText: segment.speechText || "",
         subtitleText: segment.subtitleText || segment.speechText || ""
@@ -51,6 +56,14 @@ export function broadcastSpeechSegments(sessionId, segments = []) {
   }
 
   return subscribers.size;
+}
+
+export function broadcastScenarioState(sessionId, state) {
+  const subscribers = subscribersBySession.get(sessionId || "unbound-session");
+  for (const res of subscribers || []) {
+    writeSseEvent(res, "scenario_state", { state });
+  }
+  return subscribers?.size || 0;
 }
 
 export function countDialogueEventSubscribers(sessionId) {

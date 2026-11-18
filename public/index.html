@@ -3,18 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Professor LiveAvatar Sandbox Demo</title>
+    <title>AIアバター山本医師 デバッグ画面</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <main class="page-shell">
       <section class="hero-panel">
         <div>
-          <p class="eyebrow">Professor Avatar Demo</p>
-          <h1>Sandbox で動かす医療 AI アバター</h1>
+          <p class="eyebrow">Yamamoto Avatar Debug</p>
+          <h1>シナリオ駆動 AI アバター山本医師</h1>
           <p class="hero-copy">
-            HeyGen LiveAvatar を使った肺がんガイドライン RAG 付き会話デモです。標準構成は
-            self-controlled で、応答本文はこのサーバー側で生成します。
+            HeyGen LiveAvatar を使ったシナリオ駆動型の模擬診療デモです。標準構成は self-controlled
+            で、応答セリフはこのサーバーのシナリオエンジンが決定します。
           </p>
         </div>
         <dl class="meta-grid">
@@ -57,7 +57,6 @@
             <canvas id="remoteCanvas" class="hidden" aria-hidden="true"></canvas>
             <audio id="remoteAudio" autoplay></audio>
             <div id="videoPlaceholder" class="placeholder">映像待機中...</div>
-            <div id="subtitleBox" class="subtitle-box hidden" aria-live="polite"></div>
           </div>
 
           <div class="actions-row">
@@ -95,9 +94,9 @@
           </section>
 
           <section class="info-card">
-            <p class="section-label">RAG Log</p>
-            <h2>Retrieval Events</h2>
-            <pre id="ragLog"></pre>
+            <p class="section-label">Dialogue Log</p>
+            <h2>進行ログ</h2>
+            <pre id="dialogueLog"></pre>
           </section>
         </aside>
       </section>

@@ -1,9 +1,17 @@
 import env from "../../config/env.js";
 import { getScenarioEngine } from "../scenario/scenario-engine.js";
-import { appendConversationTurn, initializeConversationSession } from "./conversation.store.js";
-import { appendDialogueLog, getLatestBoundSessionId } from "./dialogue-log.store.js";
+import {
+  adoptConversationSession,
+  appendConversationTurn,
+  getConversationMessages,
+  initializeConversationSession
+} from "./conversation.store.js";
+import {
+  appendDialogueLog,
+  bindDebugSession,
+  getLatestBoundSessionId
+} from "./dialogue-log.store.js";
 import { broadcastSpeechSegments } from "./dialogue-events.js";
-import { getLastUserMessage } from "./chat-message.js";
 import { callUpstreamOpenAi } from "./openai-client.js";
 import {
   applyLlmTranscriptNormalization,
@@ -19,7 +27,7 @@ function resolveSessionId(sessionId) {
   return sessionId || getLatestBoundSessionId() || "unbound-session";
 }
 
-async function maybeNormalizeTranscriptWithLlm(transcript, { signal } = {}) {
+async function maybeNormalizeTranscriptWithLlm(transcript, { historyMessages, signal } = {}) {
   if (!env.dialogueLlmTranscriptNormalizationEnabled || !env.openAiApiKey) {
     return transcript;
   }
@@ -27,7 +35,8 @@ async function maybeNormalizeTranscriptWithLlm(transcript, { signal } = {}) {
   try {
     const content = await callUpstreamOpenAi(
       buildMedicalTranscriptNormalizationMessages(transcript.rawText, {
-        candidateText: transcript.normalizedText
+        candidateText: transcript.normalizedText,
+        historyMessages
       }),
       {
         temperature: 0,
@@ -61,28 +70,61 @@ export function toSpeechSegments(content) {
   return segments;
 }
 
-async function buildScenarioReply(body = {}, { signal } = {}) {
+export function toSpeechBatch(content, state) {
+  const segments = toSpeechSegments(content);
+  return segments.map((segment, segmentIndex) => ({
+    ...segment,
+    state,
+    speechId: state.speechId,
+    segmentIndex,
+    segmentCount: segments.length
+  }));
+}
+
+async function buildScenarioReply(
+  { text, sessionId, revision = false, expectedVersion, expectedEpoch } = {},
+  { signal } = {}
+) {
   const startedAt = Date.now();
-  const messages = Array.isArray(body.messages) ? body.messages : [];
-  const userText = getLastUserMessage(messages);
-  const sessionId = resolveSessionId(body?.metadata?.sessionId);
+  const userText = String(text || "");
+  const resolvedSessionId = resolveSessionId(sessionId);
   const engine = getScenarioEngine();
+  // 音声補正待ちの間のオペレーター操作も検出する。
+  const requestVersion = expectedVersion ?? engine.getInputState(resolvedSessionId).version;
 
-  const ruleBasedTranscript = normalizeMedicalTranscript(userText);
-  const transcript = await maybeNormalizeTranscriptWithLlm(ruleBasedTranscript, { signal });
-
-  const engineResult = await engine.handlePatientUtterance(sessionId, transcript.normalizedText, {
+  const historyMessages = getConversationMessages(resolvedSessionId);
+  const ruleBasedTranscript = normalizeMedicalTranscript(userText, { historyMessages });
+  const transcript = await maybeNormalizeTranscriptWithLlm(ruleBasedTranscript, {
+    historyMessages,
     signal
   });
 
-  const {
+  const engineResult = await engine.handlePatientUtterance(
+    resolvedSessionId,
+    transcript.normalizedText,
+    { revision, expectedVersion: requestVersion, expectedEpoch, signal }
+  );
+
+  let {
     text: content,
     paraphrased,
     fallbackReason
   } = await maybeParaphraseLines(engineResult.lines, { signal });
 
+  signal?.throwIfAborted();
+  const currentState = engine.getInputState(resolvedSessionId);
+  if (
+    engineResult.state.version !== currentState.version ||
+    engineResult.state.speechId !== currentState.speechId
+  ) {
+    content = "";
+    engineResult.kind = "superseded";
+    engineResult.lines = [];
+    engineResult.state = currentState;
+  }
+
   appendDialogueLog({
-    sessionId,
+    sessionId: resolvedSessionId,
     kind: engineResult.kind,
     nodeId: engineResult.nodeId,
     scene: engineResult.scene,
@@ -90,6 +132,7 @@ async function buildScenarioReply(body = {}, { signal } = {}) {
     intentMethod: engineResult.intentMethod || null,
     matchedKeywords: engineResult.matchedKeywords || [],
     deviation: engineResult.deviation || null,
+    revision,
     userText,
     normalizedUserText: transcript.normalizedText,
     transcriptRepairs: transcript.repairs,
@@ -100,8 +143,10 @@ async function buildScenarioReply(body = {}, { signal } = {}) {
     answerPreview: content.slice(0, 160)
   });
 
-  if (sessionId !== "unbound-session") {
-    appendConversationTurn(sessionId, [
+  const isNoOpResult = engineResult.kind === "superseded" || engineResult.kind === "ignored";
+
+  if (resolvedSessionId !== "unbound-session" && !isNoOpResult) {
+    appendConversationTurn(resolvedSessionId, [
       { role: "user", content: transcript.normalizedText },
       { role: "assistant", content }
     ]);
@@ -111,38 +156,58 @@ async function buildScenarioReply(body = {}, { signal } = {}) {
     content,
     speechContent: sanitizeSpeechContent(content),
     engineResult,
-    sessionId
+    sessionId: resolvedSessionId
   };
 }
 
 export async function answerUserText(userText, sessionId) {
-  return buildScenarioReply({
-    messages: [{ role: "user", content: userText }],
-    metadata: sessionId ? { sessionId } : {}
-  });
+  return buildScenarioReply({ text: userText, sessionId });
 }
 
-export async function handleChatCompletion(body = {}) {
-  return buildScenarioReply(body);
-}
+export async function streamScenarioReply(
+  request = {},
+  { signal, onSpeechSegment = () => {} } = {}
+) {
+  const result = await buildScenarioReply(request, { signal });
 
-export async function streamChatCompletion(body = {}, { signal, onSpeechSegment = () => {} } = {}) {
-  const result = await buildScenarioReply(body, { signal });
-
-  for (const segment of toSpeechSegments(result.content)) {
+  for (const segment of toSpeechBatch(result.content, result.engineResult.state)) {
     await onSpeechSegment(segment);
   }
 
   return result;
 }
 
+// 新しいLiveAvatarセッションのbind時、直前のセッションからシナリオ進行と
+// 会話履歴を引き継ぐ。セッション切断→再接続で台本が先頭に戻る事故を防ぐ。
 export function bindDialogueSession(sessionId) {
+  const previousSessionId = getLatestBoundSessionId();
   const engine = getScenarioEngine();
+
+  if (previousSessionId && previousSessionId !== sessionId) {
+    const adopted = engine.adoptProgress(previousSessionId, sessionId);
+
+    if (adopted) {
+      adoptConversationSession(previousSessionId, sessionId);
+      console.log(
+        "[dialogue] session_progress_adopted",
+        JSON.stringify({ from: previousSessionId, to: sessionId })
+      );
+    }
+  }
+
+  bindDebugSession(sessionId, { source: "browser" });
   engine.getSessionState(sessionId);
 
-  return initializeConversationSession(sessionId, {
+  const conversation = initializeConversationSession(sessionId, {
     openingGreeting: env.liveAvatarOpeningGreeting || undefined
   });
+  const state = engine.getInputState(sessionId);
+  const lines = engine.getNodeLines(sessionId).lines;
+  const openingText =
+    state.version === 0 && env.liveAvatarOpeningGreeting
+      ? env.liveAvatarOpeningGreeting
+      : lines.join("\n");
+  return { ...conversation, state, openingSegments: toSpeechBatch(openingText, state) };
 }
 
 // operator操作(branch/next/jump/reset/say)の結果セリフを、
@@ -150,8 +215,9 @@ export function bindDialogueSession(sessionId) {
 export function deliverOperatorSpeech(sessionId, engineResult, { action } = {}) {
   const resolvedSessionId = resolveSessionId(sessionId);
   const content = (engineResult.lines || []).join("\n");
-  const segments = toSpeechSegments(content);
-  const subscriberCount = broadcastSpeechSegments(resolvedSessionId, segments);
+  const state = getScenarioEngine().getInputState(resolvedSessionId);
+  const segments = toSpeechBatch(content, state);
+  const subscriberCount = broadcastSpeechSegments(resolvedSessionId, segments, state);
 
   appendDialogueLog({
     sessionId: resolvedSessionId,

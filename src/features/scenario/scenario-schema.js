@@ -29,6 +29,10 @@ function validateAdvanceEntry(entry, nodeId, index, errors) {
     if (!Array.isArray(entry.keywords) || entry.keywords.some((k) => !isNonEmptyString(k))) {
       errors.push(`${label}.keywords は文字列の配列である必要があります`);
     }
+
+    if (entry.matchMode !== undefined && !["keyword", "exact"].includes(entry.matchMode)) {
+      errors.push(`${label}.matchMode は keyword または exact である必要があります`);
+    }
   }
 
   if (entry.type === "operator" && !isNonEmptyString(entry.branch)) {
@@ -54,10 +58,9 @@ function validateNode(node, index, errors) {
 
   if (
     !Array.isArray(node.doctorLines) ||
-    node.doctorLines.length === 0 ||
     node.doctorLines.some((line) => !isNonEmptyString(line))
   ) {
-    errors.push(`${label}.doctorLines は空でない文字列の配列である必要があります`);
+    errors.push(`${label}.doctorLines は文字列の配列である必要があります`);
   }
 
   if (!Array.isArray(node.advance)) {
@@ -68,6 +71,11 @@ function validateNode(node, index, errors) {
   node.advance.forEach((entry, advanceIndex) =>
     validateAdvanceEntry(entry, node.id || index, advanceIndex, errors)
   );
+
+  // 無言の投票待ち・終端のみ空の台詞を許可する。患者への質問の欠落は拒否する。
+  if (node.doctorLines?.length === 0 && node.advance.some((entry) => entry?.type !== "operator")) {
+    errors.push(`${label}.doctorLines を空にできるのは operator 待機または終端だけです`);
+  }
 }
 
 export function validateScenario(scenario) {
