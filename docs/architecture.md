@@ -39,7 +39,7 @@ flowchart TD
 ```
 src/features/scenario/    状態機械(engine)・ローダー・スキーマ検証・intent分類・逸脱処理
                           ・非発話フィルタ(utterance-filter)・進行状態store
-src/features/dialogue/    SSE入出力・発話整形(読み仮名/字幕/文分割)・会話履歴・進行ログ
+src/features/dialogue/    SSE入出力・発話整形(読み仮名/エコー判定用原文/文分割)・会話履歴・進行ログ
                           ・セッション登録簿(session-registry)・OpenAIクライアント
 src/features/access/      会場Cookie・Bearer認証、同一オリジン検証
 src/features/operator/    オペレーターAPI (/api/operator/*)
@@ -50,6 +50,7 @@ public/microphone-controller.js マイク操作の直列化・状態反映・再
 public/transcript-*.js    非発話フィルタ・エコーガード(ブラウザ側の一次防御)
 public/user-turn-detector.js  発話終了の確認・1回30秒の受付期限
 public/speech-batch.js    台詞ID・件数による全セグメント受信確認
+public/liveavatar-speech.js 発話テキストの正規化・アバター発話終了イベントの判定
 public/operation-timeout.js SDK操作の待機上限
 public/session-start-lock.js 同一ブラウザでの二重起動防止
 src/shared/http/sse.js    SSEヘッダー・イベント書き込みの共通化
@@ -63,8 +64,8 @@ src/shared/http/sse.js    SSEヘッダー・イベント書き込みの共通化
 | 条件             | 進むきっかけ                                                          | 台本での例                                   |
 | ---------------- | --------------------------------------------------------------------- | -------------------------------------------- |
 | `patient_any`    | 患者の有効な発話（待機・聞き直しの依頼は除く）                        | 挨拶、生活確認、価値観確認                   |
-| `patient_intent` | intent分類の結果で分岐（`keywords` のルール層 → 不一致時のみLLM分類） | 症状確認、病理説明                 |
-| `operator`       | オペレーター操作のみ                                                  | 画像説明の開始・Voting①・Voting②                             |
+| `patient_intent` | intent分類の結果で分岐（`keywords` のルール層 → 不一致時のみLLM分類） | 症状確認、病理説明                           |
+| `operator`       | オペレーター操作のみ                                                  | 画像説明の開始・Voting①・Voting②             |
 | `auto`           | 発話後に待たず次ノードへ連結                                          | 画像所見 → 病理、問診まとめ → 司会への引継ぎ |
 
 - `advance: []` は終端ノード。`doctorLines: []` はオペレーター待機・終端だけに許可し、投票案内や共通の締めを追加せず無言で待つ。
@@ -87,7 +88,7 @@ src/shared/http/sse.js    SSEヘッダー・イベント書き込みの共通化
 
 本番は `fixed` のみを使う。`NODE_ENV=production` では `paraphrase` を起動時に拒否する。読み仮名への変換と文単位の分割は行うが、ユーザーの言い回しに合わせて応答内容を変更しない。
 
-読み上げ用テキスト（speechText）は、まず `script-readings.js` の台本文→ひらがな表で文単位に置き換え、次に `speech-pronunciation.js` の語単位の読み仮名を適用する。字幕とエコー判定は漢字の台本のまま使う。台本の全文が表に登録されていることは `script-readings.test.js` で検証する。
+読み上げ用テキスト（speechText）は、まず `script-readings.js` の台本文→ひらがな表で文単位に置き換え、次に `speech-pronunciation.js` の語単位の読み仮名を適用する。エコー判定は漢字の台本のまま使うため、既存のAPI/SSEフィールド `subtitleText` と `subtitleContent` は互換性を保って維持する。画面の字幕欄・表示処理・`subtitles` URLパラメーターは削除済み。発話開始・終了通知によるキュー制御、マイク制御、操作画面への状態報告は字幕表示に依存しない。台本の全文が表に登録されていることは `script-readings.test.js` で検証する。
 
 | モード                         | 動作                                                                                                                 |
 | ------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
@@ -107,7 +108,7 @@ src/shared/http/sse.js    SSEヘッダー・イベント書き込みの共通化
 | `GET /api/dialogue/logs`            | 進行ログ                                                                                               |
 | `GET /api/dialogue/events`          | オペレーター発話をブラウザへpushするSSEチャンネル                                                      |
 | `GET /api/operator/state`           | 現在ノード・分岐選択肢・履歴・会場の発話通知状態                                                       |
-| `POST /api/operator/branch`         | Voting分岐確定 `{branch: "voting1_A"}`、画像説明開始 `{branch: "present_imaging"}`                                                              |
+| `POST /api/operator/branch`         | Voting分岐確定 `{branch: "voting1_A"}`、画像説明開始 `{branch: "present_imaging"}`                     |
 | `POST /api/operator/next`           | 強制送り（患者が固まった場合の救済）                                                                   |
 | `POST /api/operator/jump`           | 任意ノードへジャンプ `{nodeId}`（リハーサル・再起動復帰用）                                            |
 | `POST /api/operator/reset`          | 先頭へ戻す                                                                                             |

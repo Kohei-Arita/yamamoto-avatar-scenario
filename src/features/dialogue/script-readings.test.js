@@ -22,7 +22,7 @@ test("台本の全セリフが読み上げ時には漢字・数字・英字を�
   }
 });
 
-test("字幕は漢字の台本のまま", () => {
+test("エコー判定用の原文は漢字の台本のまま", () => {
   const line = "こんにちは。山本です。本日はよろしくお願いします。";
   assert.equal(sanitizeSubtitleContent(line), line);
   assert.equal(

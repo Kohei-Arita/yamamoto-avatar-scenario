@@ -5,7 +5,6 @@ const remoteVideo = document.getElementById("remoteVideo");
 const remoteCanvas = document.getElementById("remoteCanvas");
 const remoteAudio = document.getElementById("remoteAudio");
 const videoPlaceholder = document.getElementById("videoPlaceholder");
-const subtitleBox = document.getElementById("subtitleBox");
 const startBtn = document.getElementById("startBtn");
 const stopBtn = document.getElementById("stopBtn");
 const chromaKeyToggle = document.getElementById("chromaKeyToggle");
@@ -85,7 +84,6 @@ const manager = createSessionManager({
     remoteCanvas,
     remoteAudio,
     videoPlaceholder,
-    subtitleBox,
     chromaKeyToggle
   },
   chromaKeyOptions: { minHue: 60, maxHue: 180, minSaturation: 0.1, threshold: 1.0 },

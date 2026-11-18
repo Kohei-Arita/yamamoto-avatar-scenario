@@ -123,6 +123,7 @@ async function connect(url) {
 function fakeLiveKit() {
   window.__spoken = [];
   window.__mic = false;
+  window.__subtitleCountsDuringSpeech = [];
   const RoomEvent = Object.fromEntries(
     [
       "Connected",
@@ -173,6 +174,13 @@ function fakeLiveKit() {
         null,
         "agent-response"
       );
+      if (event.event_type === "avatar.speak_started") {
+        window.__subtitleCountsDuringSpeech.push(
+          document.querySelectorAll(
+            '#subtitleBox, .subtitle-box, track[kind="subtitles"], track[kind="captions"]'
+          ).length
+        );
+      }
     }
     patient(text) {
       for (const event of [
@@ -283,7 +291,21 @@ try {
     return { client, evaluate };
   }
 
-  const stage = await page(`${base}/xgate?autostart=1&controls=0&shortcuts=1`);
+  // 旧URLの字幕指定が残っていても、発話中を含め字幕が生成されないことを確認する。
+  async function assertNoSubtitles(target, label) {
+    const counts = await target.evaluate(`({
+      current: document.querySelectorAll('#subtitleBox, .subtitle-box, track[kind="subtitles"], track[kind="captions"]').length,
+      speaking: window.__subtitleCountsDuringSpeech
+    })`);
+    assert.equal(counts.current, 0, `${label}: 字幕欄が存在しない`);
+    assert.ok(counts.speaking.length > 0, `${label}: 発話開始を実際に確認する`);
+    assert.ok(
+      counts.speaking.every((count) => count === 0),
+      `${label}: 発話中にも字幕がない`
+    );
+  }
+
+  const stage = await page(`${base}/xgate?autostart=1&controls=0&shortcuts=1&subtitles=1`);
   await until(
     () =>
       stage.evaluate(
@@ -482,6 +504,7 @@ try {
     "treatment closes after final patient turn"
   );
   assert.equal(await stage.evaluate("window.__mic"), false);
+  await assertNoSubtitles(stage, "会場画面");
 
   const second = await page(`${base}/xgate?autostart=1`);
   await until(
@@ -492,9 +515,42 @@ try {
     "second-tab rejection"
   );
   assert.equal(issued, 1, "二重起動ではLiveAvatarセッションを発行しない");
+
+  // 2枚目をデバッグ画面へ切り替えて自動再接続を終了し、会場画面を停止してから起動する。
+  await second.client.send("Page.navigate", { url: `${base}/index.html?subtitles=1` });
+  await until(
+    () => second.evaluate("document.querySelector('#modeValue')?.textContent === 'FULL'"),
+    "debug config"
+  );
+  await stage.evaluate("document.querySelector('#stopBtn').click()");
+  await until(
+    () => stage.evaluate("document.querySelector('#connectionState').textContent === 'idle'"),
+    "stage stopped"
+  );
+  await second.client.send("Page.bringToFront");
+  await second.evaluate("document.querySelector('#startBtn').click()");
+  await until(
+    () => second.evaluate("document.querySelector('#connectionState').textContent === 'connected'"),
+    "debug start"
+  );
+  await until(
+    () =>
+      operator.evaluate(
+        "document.querySelector('#stateSession').textContent === 'browser-smoke-2'"
+      ),
+    "operator follows debug session"
+  );
+  await operator.evaluate(
+    "document.querySelector('#jumpSelect').value = 's1_greeting'; document.querySelector('#jumpBtn').click()"
+  );
+  await until(
+    () => second.evaluate("window.__spoken.length > 0 && window.__mic"),
+    "debug playback and microphone resume"
+  );
+  await assertNoSubtitles(second, "デバッグ画面");
   assert.deepEqual(exceptions, []);
   console.log(
-    "Browser smoke passed: login, greeting, negation, operator pause/resume, three interview choices, four treatment choices, muted moderator wait, ignored PET cue, imaging button and double-click guard, turn-by-turn treatment playback, stage shortcuts, Web Lock. External services mocked."
+    "Browser smoke passed: login, greeting, negation, operator pause/resume, three interview choices, four treatment choices, muted moderator wait, ignored PET cue, imaging button and double-click guard, turn-by-turn treatment playback, stage shortcuts, Web Lock, no stage/debug subtitles even with subtitles=1, debug playback and microphone resume. External services mocked."
   );
 } catch (error) {
   for (const page of pages) {

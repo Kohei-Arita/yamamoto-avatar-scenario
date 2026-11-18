@@ -8,7 +8,6 @@ import { createTrackAttacher, stopLiveAvatarSessionSafely } from "./liveavatar-s
 import {
   createChromaKeyController,
   createSessionStartLock,
-  createSubtitleController,
   resetRemoteMediaElements
 } from "./liveavatar-session-ui.js";
 
@@ -35,7 +34,6 @@ export function createSessionManager({
   LivekitClient,
   elements,
   chromaKeyOptions = {},
-  showSubtitles = true,
   verbose = false,
   onLog = () => {},
   onConnectionStateChange = () => {},
@@ -47,8 +45,7 @@ export function createSessionManager({
   api = browserApi
 }) {
   const { Room, RoomEvent, Track } = LivekitClient;
-  const { remoteVideo, remoteCanvas, remoteAudio, videoPlaceholder, subtitleBox, chromaKeyToggle } =
-    elements;
+  const { remoteVideo, remoteCanvas, remoteAudio, videoPlaceholder, chromaKeyToggle } = elements;
   const sessionStartLock = createSessionStartLock({
     onLost: () => {
       stop().catch(onError);
@@ -62,7 +59,6 @@ export function createSessionManager({
       );
     }
   });
-  const subtitleController = createSubtitleController({ subtitleBox, showSubtitles });
   const chromaKeyController = createChromaKeyController({
     remoteVideo,
     remoteCanvas,
@@ -96,7 +92,6 @@ export function createSessionManager({
     sessionStartLock.release();
     chromaKeyController.stop({ clearCanvas: true, showVideo: true });
     resetRemoteMediaElements({ remoteVideo, remoteAudio, videoPlaceholder });
-    subtitleController.clearNow();
     onMicStateChange("off");
     onConnectionStateChange("idle");
   }
@@ -252,7 +247,6 @@ export function createSessionManager({
           getSessionId: () => run.sessionId,
           liveAvatarConfig: config,
           respondWithDialogueStream: api.respondWithDialogueStream,
-          subtitleController,
           microphoneInitiallyMuted: true,
           onLog,
           onError: handleError,
@@ -423,7 +417,6 @@ export function createSessionManager({
 
   function dispose() {
     if (activeRun) releaseRun(activeRun);
-    subtitleController.dispose();
   }
 
   return {

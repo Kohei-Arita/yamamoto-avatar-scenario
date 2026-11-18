@@ -1,4 +1,4 @@
-// 固定台本(haigan-2026)の読み上げ用ひらがな表。字幕・エコー判定は漢字の台本を使い、
+// 固定台本(haigan-2026)の読み上げ用ひらがな表。エコー判定は漢字の台本を使い、
 // TTSへ渡す speechText だけを文単位でこの読みに置き換えて誤読を防ぐ。
 // 台本の文言を変えたら、ここにも対応する読みを追加すること（script-readings.test.js で検知）。
 export const SCRIPT_READINGS = new Map([

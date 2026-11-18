@@ -1,5 +1,4 @@
 import { clearChromaKeyCanvas, setupChromaKey } from "./liveavatar-chroma-key.js";
-import { normalizeSubtitleText } from "./liveavatar-subtitles.js";
 export { createSessionStartLock } from "./session-start-lock.js";
 
 export function describeSessionError(error, { defaultMessage = "Unknown error" } = {}) {
@@ -20,56 +19,6 @@ export function describeSessionError(error, { defaultMessage = "Unknown error" }
   }
 
   return error.message || defaultMessage;
-}
-
-export function createSubtitleController({
-  subtitleBox,
-  showSubtitles = true,
-  hideDelayMs = 1200
-} = {}) {
-  let clearTimer = null;
-
-  function set(text) {
-    clearTimeout(clearTimer);
-
-    const normalizedText = normalizeSubtitleText(text);
-
-    if (!subtitleBox || !showSubtitles || !normalizedText) {
-      subtitleBox?.classList.add("hidden");
-
-      if (subtitleBox) {
-        subtitleBox.textContent = "";
-      }
-
-      return;
-    }
-
-    subtitleBox.textContent = normalizedText;
-    subtitleBox.classList.remove("hidden");
-  }
-
-  function clearSoon() {
-    clearTimeout(clearTimer);
-    clearTimer = setTimeout(() => {
-      set("");
-    }, hideDelayMs);
-  }
-
-  function clearNow() {
-    clearTimeout(clearTimer);
-    set("");
-  }
-
-  function dispose() {
-    clearTimeout(clearTimer);
-  }
-
-  return {
-    set,
-    clearSoon,
-    clearNow,
-    dispose
-  };
 }
 
 export function createChromaKeyController({

@@ -1,4 +1,4 @@
-import { isAvatarSubtitleEndEvent, normalizeSubtitleText } from "./liveavatar-subtitles.js";
+import { isAvatarSpeechEndEvent, normalizeSpeechText } from "./liveavatar-speech.js";
 import { createMicrophoneController } from "./microphone-controller.js";
 import { createEchoGuard } from "./transcript-echo-guard.js";
 import { isSubstantiveTranscript } from "./transcript-filter.js";
@@ -8,7 +8,7 @@ import { withOperationTimeout } from "./operation-timeout.js";
 const AGENT_CONTROL_TOPIC = "agent-control";
 
 function normalizeTranscript(parts) {
-  return normalizeSubtitleText(parts.join(""));
+  return normalizeSpeechText(parts.join(""));
 }
 
 // LiveAvatarのsource_event_idを優先。旧クライアントID付きイベントも受け付ける。
@@ -22,7 +22,7 @@ function extractEventGenerationMeta(event) {
 
 function normalizeSpeechSegment(segment) {
   if (typeof segment === "string") {
-    const normalizedText = normalizeSubtitleText(segment);
+    const normalizedText = normalizeSpeechText(segment);
 
     if (!normalizedText) {
       return null;
@@ -34,8 +34,9 @@ function normalizeSpeechSegment(segment) {
     };
   }
 
-  const speechText = normalizeSubtitleText(segment?.speechText || segment?.text || "");
-  const subtitleText = normalizeSubtitleText(
+  const speechText = normalizeSpeechText(segment?.speechText || segment?.text || "");
+  // subtitleTextは既存の通信フィールド名。漢字の原文をエコー判定に使うため保持する。
+  const subtitleText = normalizeSpeechText(
     segment?.subtitleText || segment?.speechText || segment?.text || ""
   );
 
@@ -764,7 +765,7 @@ export function createSelfControlledConversation({
       return;
     }
 
-    if (isAvatarSubtitleEndEvent(event)) {
+    if (isAvatarSpeechEndEvent(event)) {
       if (isWithinInterruptBarrier() && !hasCorrelationMeta(extractEventGenerationMeta(event)))
         return;
       if (!activeSpeechSegment) {

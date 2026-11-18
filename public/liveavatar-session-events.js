@@ -30,7 +30,6 @@ export function createSelfControlledSession({
   getSessionId,
   liveAvatarConfig,
   respondWithDialogueStream,
-  subtitleController,
   onLog = () => {},
   onAnswer = () => {},
   onError = () => {},
@@ -88,16 +87,11 @@ export function createSelfControlledSession({
     },
     onLog,
     onAnswer,
-    onSpeechStart: (text) => {
-      subtitleController?.set(text);
+    onSpeechStart: () => {
       onPlaybackState("speaking");
     },
     onSpeechIdle: () => {
-      subtitleController?.clearSoon();
       onPlaybackState("idle");
-    },
-    onSpeechReset: () => {
-      subtitleController?.clearNow();
     },
     onError
   });

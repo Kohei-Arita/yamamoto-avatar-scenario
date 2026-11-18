@@ -11,6 +11,7 @@ function stripDisplayDecorations(content = "") {
     .trim();
 }
 
+// エコー判定用の原文。既存のAPI/SSEのsubtitleText・subtitleContent形式を維持する。
 export function sanitizeSubtitleContent(content = "") {
   return stripDisplayDecorations(content);
 }

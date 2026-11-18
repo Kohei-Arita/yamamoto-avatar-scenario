@@ -108,8 +108,7 @@ function fixture(overrides = {}) {
     elements: {
       remoteVideo: element(),
       remoteAudio: element(),
-      videoPlaceholder: element(),
-      subtitleBox: element()
+      videoPlaceholder: element()
     },
     onDisconnected: (reason) => disconnected.push(reason)
   });

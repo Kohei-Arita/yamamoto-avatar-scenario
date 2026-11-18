@@ -523,13 +523,13 @@ test("入力停止と破棄で受付期限・発話監視を解除し、古い�
 });
 
 test("matches avatar lifecycle events by echoed client ids before advancing the queue", async () => {
-  const startedSubtitles = [];
+  const startedSpeech = [];
   const { room, publishedEvents } = createRoomWithPublishedEvents();
   const conversation = createSelfControlledConversation({
     getRoom: () => room,
     getSessionId: () => "session-5",
     respondToTextStream: async () => ({ content: "" }),
-    onSpeechStart: (text) => startedSubtitles.push(text)
+    onSpeechStart: (text) => startedSpeech.push(text)
   });
 
   await conversation.speakText("最初の文です。");
@@ -544,7 +544,7 @@ test("matches avatar lifecycle events by echoed client ids before advancing the 
     client_segment_id: "stale-segment"
   });
 
-  assert.deepEqual(startedSubtitles, []);
+  assert.deepEqual(startedSpeech, []);
 
   conversation.handleAgentResponseEvent({
     event_type: "avatar.speak_started",
@@ -553,7 +553,7 @@ test("matches avatar lifecycle events by echoed client ids before advancing the 
     client_segment_id: publishedEvents[0].client_segment_id
   });
 
-  assert.deepEqual(startedSubtitles, ["最初の文です。"]);
+  assert.deepEqual(startedSpeech, ["最初の文です。"]);
 
   conversation.handleAgentResponseEvent({
     event_type: "avatar.speak_ended",
@@ -577,7 +577,7 @@ test("matches avatar lifecycle events by echoed client ids before advancing the 
 
 test("speak_started未着時はspeak_textを一度だけ自動再送する(開始挨拶の無音対策)", async () => {
   const { room, publishedEvents } = createRoomWithPublishedEvents();
-  const startedSubtitles = [];
+  const startedSpeech = [];
   const conversation = createSelfControlledConversation({
     getRoom: () => room,
     getSessionId: () => "session-speak-retry",
@@ -585,7 +585,7 @@ test("speak_started未着時はspeak_textを一度だけ自動再送する(開�
     speakStartTimeoutMs: 30,
     speakEndTimeoutBaseMs: 200,
     speakEndTimeoutPerCharMs: 0,
-    onSpeechStart: (text) => startedSubtitles.push(text)
+    onSpeechStart: (text) => startedSpeech.push(text)
   });
 
   await conversation.speakText("こんにちは。山本です。");
@@ -603,7 +603,7 @@ test("speak_started未着時はspeak_textを一度だけ自動再送する(開�
     event_type: "avatar.speak_started",
     client_segment_id: speakEvents[1].client_segment_id
   });
-  assert.deepEqual(startedSubtitles, ["こんにちは。山本です。"]);
+  assert.deepEqual(startedSpeech, ["こんにちは。山本です。"]);
 
   // 3回目の再送はしない
   await wait(50);
@@ -701,20 +701,30 @@ test("句読点だけのASR断片は送信せず、アバターの発話も中�
   assert.equal(publishedEvents.length, 1);
 });
 
-test("アバター発話のエコー(回り込み文字起こし)を患者発話として扱わない", async () => {
+test("読み仮名で発話した後も漢字原文のエコーを除外し、患者の短答は通す", async () => {
   const calls = [];
-  const { room } = createRoomWithPublishedEvents();
+  const logs = [];
+  const { room, publishedEvents } = createRoomWithPublishedEvents();
   const conversation = createSelfControlledConversation({
     getRoom: () => room,
     getSessionId: () => "session-echo",
     debounceMs: 20,
+    onLog: (message) => logs.push(message),
     respondToTextStream: async ({ text }) => {
       calls.push(text);
       return { content: text };
     }
   });
 
-  await conversation.speakText("画像では、右下葉に約40mmの不整形な結節を認めます。");
+  const speechText =
+    "がぞうでは、みぎかようにやくよんじゅうミリのふせいけいなけっせつをみとめます。";
+  await conversation.speakText({
+    speechText,
+    subtitleText: "画像では、右下葉に約40mmの不整形な結節を認めます。"
+  });
+  assert.equal(publishedEvents[0].text, speechText);
+  conversation.handleAgentResponseEvent({ event_type: "avatar.speak_started" });
+  conversation.handleAgentResponseEvent({ event_type: "avatar.speak_ended" });
 
   // アバターの発話がスピーカー→マイク経由で文字起こしされて返ってきた
   conversation.handleAgentResponseEvent({
@@ -724,17 +734,16 @@ test("アバター発話のエコー(回り込み文字起こし)を患者発話
 
   await wait(60);
   assert.deepEqual(calls, []);
+  assert.ok(logs.some((message) => message.startsWith("user.transcription.echo_ignored:")));
 
-  // 発話が終われば、本物の患者発話は通る。
-  conversation.handleAgentResponseEvent({ event_type: "avatar.speak_started" });
-  conversation.handleAgentResponseEvent({ event_type: "avatar.speak_ended" });
+  // 漢字原文をエコー判定に使いながら、本物の患者の短答は通す。
   conversation.handleAgentResponseEvent({
     event_type: "user.transcription",
-    text: "特にありません"
+    text: "はい。"
   });
 
   await wait(60);
-  assert.deepEqual(calls, ["特にありません"]);
+  assert.deepEqual(calls, ["はい。"]);
 });
 
 test("継続発話の結合再送にはrevisionフラグが付く", async () => {
@@ -890,16 +899,16 @@ test("allowInterrupt=falseでは複数文発話の合間(次セグメント送�
   assert.equal(publishedEvents[1].text, "次の文です。");
 });
 
-test("holds new speech until the interrupt grace window passes and clears stale subtitles", async () => {
+test("holds new speech until the interrupt grace window passes and resets speech state", async () => {
   const resets = [];
-  const startedSubtitles = [];
+  const startedSpeech = [];
   const { room, publishedEvents } = createRoomWithPublishedEvents();
   const conversation = createSelfControlledConversation({
     getRoom: () => room,
     getSessionId: () => "session-6",
     respondToTextStream: async () => ({ content: "" }),
     interruptGraceMs: 40,
-    onSpeechStart: (text) => startedSubtitles.push(text),
+    onSpeechStart: (text) => startedSpeech.push(text),
     onSpeechReset: () => resets.push("reset")
   });
 
@@ -922,7 +931,7 @@ test("holds new speech until the interrupt grace window passes and clears stale 
     client_segment_id: "stale-segment"
   });
 
-  assert.deepEqual(startedSubtitles, []);
+  assert.deepEqual(startedSpeech, []);
 
   await wait(60);
 

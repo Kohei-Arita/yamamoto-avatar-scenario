@@ -5,7 +5,6 @@ const remoteVideo = document.getElementById("remoteVideo");
 const remoteCanvas = document.getElementById("remoteCanvas");
 const remoteAudio = document.getElementById("remoteAudio");
 const videoPlaceholder = document.getElementById("videoPlaceholder");
-const subtitleBox = document.getElementById("subtitleBox");
 const audioUnlockOverlay = document.getElementById("audioUnlockOverlay");
 const startBtn = document.getElementById("startBtn");
 const stopBtn = document.getElementById("stopBtn");
@@ -24,7 +23,6 @@ if (operatorToken) {
 }
 const shouldAutostart = params.get("autostart") === "1";
 const hideControls = params.get("controls") === "0";
-const showSubtitles = params.get("subtitles") !== "0";
 
 let hudHideTimer = null;
 
@@ -124,11 +122,9 @@ const manager = createSessionManager({
     remoteCanvas,
     remoteAudio,
     videoPlaceholder,
-    subtitleBox,
     chromaKeyToggle
   },
   chromaKeyOptions: { minHue: 60, maxHue: 180, minSaturation: 0.1, threshold: 1.0 },
-  showSubtitles,
   onConnectionStateChange: setConnectionState,
   onMicStateChange: setMicState,
   onLog: (message) => console.debug(message),
